@@ -417,17 +417,19 @@
   .section-row {
     display: flex;
     gap: 24px;
-    align-items: flex-start;
+    align-items: stretch;
   }
 
   .section-col {
     flex: 1;
     min-width: 0;
+    display: flex;
+    flex-direction: column;
   }
 
-  .section-col:not(:last-child) {
-    border-right: 1px solid var(--border);
-    padding-right: 24px;
+  .section-col .gpu-grid {
+    flex: 1;
+    grid-auto-rows: 1fr;
   }
 
   .host-header {
@@ -865,6 +867,7 @@ function updateDashboard(data) {
         <span class="host-name">${host.name.toUpperCase()}</span>
         ${host.subtitle ? `<span class="host-subtitle">${host.subtitle}</span>` : ''}
       </div>`;
+      html += `<div class="section-title" style="margin-bottom:8px;">GPUs</div>`;
       html += `<div class="gpu-grid">`;
       host.gpus.forEach((g, i) => { html += renderGPU(g); });
       html += `</div>`;
@@ -879,6 +882,7 @@ function updateDashboard(data) {
     html += `<div class="section-row">`;
     serverHosts.forEach(([key, host]) => {
       html += `<div class="section-col">`;
+      html += `<div class="section-title" style="margin-bottom:8px;margin-top:12px;">Inference Servers</div>`;
       html += `<div class="server-grid">`;
       host.servers.forEach(s => { html += renderServer(s); });
       html += `</div>`;
