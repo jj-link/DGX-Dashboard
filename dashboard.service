@@ -1,0 +1,15 @@
+[Unit]
+Description=DGX Spark Dashboard
+After=network.target
+
+[Service]
+Type=simple
+User=jjlink
+WorkingDirectory=/home/jjlink/dgx-dashboard
+ExecStart=/home/jjlink/dgx-dashboard/venv/bin/python /home/jjlink/dgx-dashboard/server.py
+Restart=on-failure
+RestartSec=5
+Environment=PATH=/home/jjlink/.local/bin:/usr/bin:/bin
+
+[Install]
+WantedBy=multi-user.target
