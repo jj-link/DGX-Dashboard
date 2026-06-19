@@ -4,7 +4,6 @@
 import configparser
 import glob
 import os
-import mimetypes
 import re
 import socket
 import subprocess
@@ -34,7 +33,6 @@ AUTH_PASS = config.get("server", "auth_password", fallback="")
 
 BENCHMARKS_DIR = config.get("benchmarks", "results_dir", fallback="")
 AIDER_BENCHMARKS_DIR = config.get("benchmarks", "aider_benchmarks_dir", fallback="")
-BENCHMARK_HTML = os.path.join(BENCHMARKS_DIR, "benchmark-dashboard.html") if BENCHMARKS_DIR else ""
 
 # Parse inference servers
 INFERENCE_SERVERS = {}
@@ -766,15 +764,6 @@ def before_req():
 @app.route("/")
 def index():
     return render_template("index.html", refresh_interval=REFRESH)
-
-
-@app.route("/benchmarks")
-def benchmarks_html():
-    """Serve the original benchmark dashboard HTML file."""
-    if BENCHMARK_HTML and os.path.isfile(BENCHMARK_HTML):
-        with open(BENCHMARK_HTML, "r") as f:
-            return Response(f.read(), mimetype="text/html")
-    return "Benchmark HTML file not found", 404
 
 
 @app.route("/api/benchmarks")

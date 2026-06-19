@@ -509,12 +509,93 @@
   .tab-panel { display: none; }
   .tab-panel.active { display: block; }
 
-  /* ── Benchmark iframe ────────────────────────────────────── */
-  .benchmark-frame {
+  /* ── Benchmark sub-tabs ──────────────────────────────────── */
+  .sub-tabs {
+    display: flex;
+    gap: 2px;
+    margin-bottom: 16px;
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    padding: 4px;
+  }
+
+  .sub-tab-btn {
+    font-family: inherit;
+    font-size: 11px;
+    color: var(--text-dim);
+    background: none;
+    border: 1px solid transparent;
+    padding: 6px 14px;
+    cursor: pointer;
+    border-radius: 4px;
+    transition: color 0.2s, background 0.2s;
+  }
+  .sub-tab-btn:hover { color: var(--text); background: var(--surface2); }
+  .sub-tab-btn.active { color: var(--green); background: var(--surface2); border-color: var(--green); }
+
+  .sub-tab-panel { display: none; }
+  .sub-tab-panel.active { display: block; }
+
+  /* ── Data tables ─────────────────────────────────────────── */
+  .data-table {
     width: 100%;
-    height: calc(100vh - 100px);
-    border: none;
-    display: block;
+    border-collapse: collapse;
+    font-size: 12px;
+  }
+  .data-table th {
+    text-align: left;
+    font-size: 10px;
+    text-transform: uppercase;
+    letter-spacing: 1px;
+    color: var(--text-dim);
+    padding: 8px 12px;
+    border-bottom: 1px solid var(--border);
+    background: var(--surface2);
+    position: sticky;
+    top: 0;
+  }
+  .data-table td {
+    padding: 8px 12px;
+    border-bottom: 1px solid var(--border);
+    color: var(--text);
+    vertical-align: middle;
+  }
+  .data-table tr:hover td { background: var(--surface2); }
+  .data-table td.num {
+    text-align: right;
+    font-variant-numeric: tabular-nums;
+  }
+  .data-table .bar-cell {
+    width: 120px;
+  }
+  .table-bar-wrap {
+    width: 100%;
+    height: 6px;
+    background: var(--surface2);
+    border-radius: 3px;
+    overflow: hidden;
+  }
+  .table-bar {
+    height: 100%;
+    border-radius: 3px;
+    transition: width 0.3s ease;
+  }
+
+  /* Heatmap cell */
+  .hm-cell {
+    text-align: center;
+    padding: 6px 8px;
+    border-radius: 3px;
+    font-weight: 600;
+    font-size: 12px;
+  }
+
+  .bm-empty {
+    text-align: center;
+    color: var(--text-dim);
+    padding: 40px;
+    font-size: 13px;
   }
 
   /* ── Responsive ─────────────────────────────────────────── */
@@ -600,7 +681,18 @@
 
   <!-- BENCHMARKS TAB -->
   <div class="tab-panel" id="tab-benchmarks">
-    <iframe class="benchmark-frame" id="benchmark-frame" src="/benchmarks" title="Benchmarks"></iframe>
+    <div class="sub-tabs" id="bm-subtabs">
+      <button class="sub-tab-btn active" data-subtab="oneshot">Oneshot</button>
+      <button class="sub-tab-btn" data-subtab="multiturn">Multi-turn</button>
+      <button class="sub-tab-btn" data-subtab="heatmap">Language Heatmap</button>
+      <button class="sub-tab-btn" data-subtab="quantization">Quantization Impact</button>
+      <button class="sub-tab-btn" data-subtab="tokencost">Token Cost</button>
+    </div>
+    <div class="sub-tab-panel active" id="subtab-oneshot"><div class="bm-empty">Loading...</div></div>
+    <div class="sub-tab-panel" id="subtab-multiturn"><div class="bm-empty">Loading...</div></div>
+    <div class="sub-tab-panel" id="subtab-heatmap"><div class="bm-empty">Loading...</div></div>
+    <div class="sub-tab-panel" id="subtab-quantization"><div class="bm-empty">Loading...</div></div>
+    <div class="sub-tab-panel" id="subtab-tokencost"><div class="bm-empty">Loading...</div></div>
   </div>
 
 </div>
@@ -953,6 +1045,9 @@ function flash() {
   el.classList.add('active');
 }
 
+// ── Tab switching ────────────────────────────────────────────────────────────
+
+let benchmarksData = null;
 let pollTimer = setInterval(fetchStats, {{ refresh_interval }} * 1000);
 
 document.querySelectorAll('.tab-btn').forEach(btn => {
@@ -967,9 +1062,170 @@ document.querySelectorAll('.tab-btn').forEach(btn => {
     } else {
       clearInterval(pollTimer);
       pollTimer = null;
+      if (!benchmarksData) fetchBenchmarks();
     }
   });
 });
+
+// ── Sub-tab switching ────────────────────────────────────────────────────────
+
+document.querySelectorAll('.sub-tab-btn').forEach(btn => {
+  btn.addEventListener('click', () => {
+    const subId = btn.dataset.subtab;
+    document.querySelectorAll('.sub-tab-btn').forEach(b => b.classList.remove('active'));
+    btn.classList.add('active');
+    document.querySelectorAll('.sub-tab-panel').forEach(p => p.classList.remove('active'));
+    document.getElementById('subtab-' + subId).classList.add('active');
+  });
+});
+
+// ── Benchmark data fetch ─────────────────────────────────────────────────────
+
+async function fetchBenchmarks() {
+  try {
+    const resp = await fetch('/api/benchmarks');
+    if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
+    benchmarksData = await resp.json();
+    renderAllBenchmarks(benchmarksData);
+  } catch (e) {
+    document.querySelectorAll('.sub-tab-panel').forEach(p => {
+      p.innerHTML = `<div class="bm-empty">Error loading benchmarks: ${he(e.message)}</div>`;
+    });
+  }
+}
+
+function renderAllBenchmarks(data) {
+  document.getElementById('subtab-oneshot').innerHTML = renderOneshotTable(data.oneshot);
+  document.getElementById('subtab-multiturn').innerHTML = renderMultiturnTable(data.multiturn);
+  document.getElementById('subtab-heatmap').innerHTML = renderHeatmap(data.oneshot);
+  document.getElementById('subtab-quantization').innerHTML = renderQuantization(data.permodel);
+  document.getElementById('subtab-tokencost').innerHTML = renderTokenCost(data.permodel);
+}
+
+// ── Oneshot cross-agent table ────────────────────────────────────────────────
+
+function renderOneshotTable(oneshot) {
+  if (!oneshot || Object.keys(oneshot).length === 0) return '<div class="bm-empty">No oneshot data</div>';
+  const langs = ['python', 'javascript', 'go', 'rust', 'cpp', 'java'];
+  let html = '<div style="overflow-x:auto"><table class="data-table"><thead><tr>';
+  html += '<th>Model</th>';
+  langs.forEach(l => { html += `<th>${l}</th>`; });
+  html += '</tr></thead><tbody>';
+  Object.entries(oneshot).forEach(([model, byLang]) => {
+    html += `<tr><td><strong>${he(model)}</strong></td>`;
+    langs.forEach(l => {
+      const d = byLang[l];
+      if (d && d.total > 0) {
+        const pct = Math.round(d.ok / d.total * 100);
+        const color = pct >= 80 ? 'var(--green)' : pct >= 50 ? 'var(--yellow)' : 'var(--red)';
+        html += `<td class="num"><div style="color:${color};font-weight:600">${pct}%</div><div class="table-bar-wrap"><div class="table-bar" style="width:${pct}%;background:${color}"></div></div><div style="font-size:10px;color:var(--text-dim);margin-top:2px">${d.ok}/${d.total}</div></td>`;
+      } else {
+        html += '<td class="num" style="color:var(--text-dim)">--</td>';
+      }
+    });
+    html += '</tr>';
+  });
+  html += '</tbody></table></div>';
+  return html;
+}
+
+// ── Multi-turn table ─────────────────────────────────────────────────────────
+
+function renderMultiturnTable(multiturn) {
+  if (!multiturn || multiturn.length === 0) return '<div class="bm-empty">No multi-turn data</div>';
+  let html = '<div style="overflow-x:auto"><table class="data-table"><thead><tr>';
+  html += '<th>Model</th><th>pass@1</th><th>pass@2</th><th>Total</th>';
+  ['python', 'javascript', 'go', 'rust', 'cpp', 'java'].forEach(l => { html += `<th>${l}</th>`; });
+  html += '</tr></thead><tbody>';
+  multiturn.forEach(entry => {
+    html += `<tr>`;
+    html += `<td><strong>${he(entry.model)}</strong></td>`;
+    html += `<td class="num">${entry.pass1}</td>`;
+    const p2color = entry.pass2 >= 80 ? 'var(--green)' : entry.pass2 >= 50 ? 'var(--yellow)' : 'var(--red)';
+    html += `<td class="num" style="color:${p2color};font-weight:600">${entry.pass2}</td>`;
+    html += `<td class="num">${entry.total}</td>`;
+    ['python', 'javascript', 'go', 'rust', 'cpp', 'java'].forEach(l => {
+      const d = entry.per_lang && entry.per_lang[l];
+      if (d && d.total > 0) {
+        const color = d.pass >= 80 ? 'var(--green)' : d.pass >= 50 ? 'var(--yellow)' : 'var(--red)';
+        html += `<td class="num"><div style="color:${color};font-weight:600">${d.pass}%</div><div class="table-bar-wrap"><div class="table-bar" style="width:${d.pass}%;background:${color}"></div></div><div style="font-size:10px;color:var(--text-dim);margin-top:2px">${d.ok}/${d.total}</div></td>`;
+      } else {
+        html += '<td class="num" style="color:var(--text-dim)">--</td>';
+      }
+    });
+    html += '</tr>';
+  });
+  html += '</tbody></table></div>';
+  return html;
+}
+
+// ── Language heatmap ─────────────────────────────────────────────────────────
+
+function renderHeatmap(oneshot) {
+  if (!oneshot || Object.keys(oneshot).length === 0) return '<div class="bm-empty">No oneshot data</div>';
+  const langs = ['python', 'javascript', 'go', 'rust', 'cpp', 'java'];
+  let html = '<div style="overflow-x:auto"><table class="data-table"><thead><tr>';
+  html += '<th>Model</th>';
+  langs.forEach(l => { html += `<th>${l}</th>`; });
+  html += '</tr></thead><tbody>';
+  Object.entries(oneshot).forEach(([model, byLang]) => {
+    html += `<tr><td><strong>${he(model)}</strong></td>`;
+    langs.forEach(l => {
+      const d = byLang[l];
+      if (d && d.total > 0) {
+        const pct = Math.round(d.ok / d.total * 100);
+        const bgAlpha = (pct / 100 * 0.35).toFixed(2);
+        const color = pct >= 80 ? '0,230,118' : pct >= 50 ? '255,202,40' : '255,82,82';
+        html += `<td><div class="hm-cell" style="background:rgba(${color},${bgAlpha});color:rgba(${color},0.9)">${pct}%</div></td>`;
+      } else {
+        html += '<td style="text-align:center;color:var(--text-dim)">--</td>';
+      }
+    });
+    html += '</tr>';
+  });
+  html += '</tbody></table></div>';
+  return html;
+}
+
+// ── Quantization comparison ──────────────────────────────────────────────────
+
+function renderQuantization(permodel) {
+  if (!permodel || permodel.length === 0) return '<div class="bm-empty">No per-model data</div>';
+  const sorted = [...permodel].sort((a, b) => b.pass_rate - a.pass_rate);
+  let html = '<div style="overflow-x:auto"><table class="data-table"><thead><tr>';
+  html += '<th>Model</th><th>Served</th><th>Pass Rate</th><th>Passed</th><th>Total</th></tr></thead><tbody>';
+  sorted.forEach(entry => {
+    const color = entry.pass_rate >= 80 ? 'var(--green)' : entry.pass_rate >= 50 ? 'var(--yellow)' : 'var(--red)';
+    html += `<tr><td><strong>${he(entry.alias)}</strong></td><td>${he(entry.served)}</td>`;
+    html += `<td class="num"><div style="color:${color};font-weight:600">${entry.pass_rate}%</div><div class="table-bar-wrap"><div class="table-bar" style="width:${entry.pass_rate}%;background:${color}"></div></div></td>`;
+    html += `<td class="num">${entry.passed}</td><td class="num">${entry.total}</td></tr>`;
+  });
+  html += '</tbody></table></div>';
+  return html;
+}
+
+// ── Token cost ───────────────────────────────────────────────────────────────
+
+function renderTokenCost(permodel) {
+  if (!permodel || permodel.length === 0) return '<div class="bm-empty">No per-model data</div>';
+  const sorted = [...permodel].sort((a, b) => b.avg_total_tokens - a.avg_total_tokens);
+  let html = '<div style="overflow-x:auto"><table class="data-table"><thead><tr>';
+  html += '<th>Model</th><th>Avg Prompt</th><th>Avg Completion</th><th>Avg Total</th><th>Total Prompt</th><th>Total Completion</th></tr></thead><tbody>';
+  const maxAvg = Math.max(...sorted.map(e => e.avg_total_tokens), 1);
+  sorted.forEach(entry => {
+    const pct = (entry.avg_total_tokens / maxAvg * 100).toFixed(1);
+    html += `<tr><td><strong>${he(entry.alias)}</strong></td>`;
+    html += `<td class="num">${fmtNum(entry.avg_prompt, 0)}</td>`;
+    html += `<td class="num">${fmtNum(entry.avg_completion, 0)}</td>`;
+    html += `<td class="num"><div style="font-weight:600">${fmtNum(entry.avg_total_tokens, 0)}</div><div class="table-bar-wrap"><div class="table-bar" style="width:${pct}%;background:var(--orange)"></div></div></td>`;
+    html += `<td class="num">${fmtNum(entry.prompt_tokens, 0)}</td>`;
+    html += `<td class="num">${fmtNum(entry.completion_tokens, 0)}</td></tr>`;
+  });
+  html += '</tbody></table></div>';
+  return html;
+}
+
+// ── Init ─────────────────────────────────────────────────────────────────────
 
 fetchStats();
 </script>
