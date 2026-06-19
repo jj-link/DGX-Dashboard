@@ -3,6 +3,7 @@
 
 import configparser
 import glob
+import json
 import os
 import re
 import socket
@@ -533,7 +534,7 @@ def _aggregate_oneshot_cross_agent():
 
     best_ts = {}
     for f in files:
-        ts_match = re.search(r"(\d{14})\.json$", f)
+        ts_match = re.search(r"(\d{8}-\d{6})\.json$", os.path.basename(f))
         ts = ts_match.group(1) if ts_match else "0"
         try:
             with open(f) as fp:
@@ -550,7 +551,7 @@ def _aggregate_oneshot_cross_agent():
 
     aggregated = {}
     for f in files:
-        ts_match = re.search(r"(\d{14})\.json$", f)
+        ts_match = re.search(r"(\d{8}-\d{6})\.json$", os.path.basename(f))
         ts = ts_match.group(1) if ts_match else "0"
         try:
             with open(f) as fp:
@@ -581,57 +582,28 @@ def _aggregate_oneshot_cross_agent():
 
 
 def _aggregate_multiturn_aider():
-    """Load multi-turn results from aider sweep directories."""
+    """Load multi-turn summary from _stats.yml for live comparison."""
     if not AIDER_BENCHMARKS_DIR:
         return []
-
     sweeps = sorted(glob.glob(os.path.join(AIDER_BENCHMARKS_DIR, "*-aiderdkr-*")))
     result = []
     for sweep_dir in sweeps:
-        stats_path = os.path.join(sweep_dir, "_stats.yml")
-        if not os.path.exists(stats_path):
+        sp = os.path.join(sweep_dir, "_stats.yml")
+        if not os.path.exists(sp):
             continue
-        stats = _parse_aider_stats_yml(stats_path)
-        model = stats.get("model", "unknown")
-
-        per_lang = {}
-        for lang in ["python", "javascript", "go", "rust", "cpp", "java"]:
-            lang_dir = os.path.join(sweep_dir, lang)
-            if not os.path.isdir(lang_dir):
-                continue
-            ok_count = 0
-            total_count = 0
-            for sub in os.listdir(lang_dir):
-                rpath = os.path.join(lang_dir, sub, "exercises", "practice")
-                if os.path.isdir(rpath):
-                    for ex in os.listdir(rpath):
-                        rf = os.path.join(rpath, ex, ".aider.results.json")
-                        if os.path.exists(rf):
-                            try:
-                                with open(rf) as f:
-                                    rd = json.load(f)
-                                total_count += 1
-                                outcomes = rd.get("tests_outcomes", [])
-                                if outcomes and all(outcomes):
-                                    ok_count += 1
-                            except Exception:
-                                pass
-            per_lang[lang] = {
-                "ok": ok_count,
-                "total": total_count,
-                "pass": round(ok_count / total_count * 100, 0) if total_count else 0,
-            }
-
+        try:
+            stats = _parse_aider_stats_yml(sp)
+        except Exception:
+            continue
         result.append({
-            "model": model,
+            "model": stats.get("model", "?"),
             "pass1": stats.get("pass_rate_1", 0),
             "pass2": stats.get("pass_rate_2", 0),
-            "per_lang": per_lang,
+            "total_tokens": stats.get("prompt_tokens", 0) + stats.get("completion_tokens", 0),
             "prompt_tokens": stats.get("prompt_tokens", 0),
             "completion_tokens": stats.get("completion_tokens", 0),
             "total": stats.get("total_tests", 0),
         })
-
     return sorted(result, key=lambda x: x["pass2"], reverse=True)
 
 
@@ -678,17 +650,29 @@ def _aggregate_permodel_oneshot():
     return result
 
 
+BENCHMARK_STATIC = os.path.join(os.path.dirname(os.path.abspath(__file__)), "benchmark_static.json")
+
+
 def load_benchmark_data():
-    """Aggregate all benchmark data from JSON files and aider sweeps."""
+    """Load benchmark data from pre-extracted static JSON matching original dashboard."""
     try:
+        with open(BENCHMARK_STATIC) as f:
+            static = json.load(f)
+
+        # Load cross-agent oneshot as live bonus data (fast - only 2 files)
         oneshot = _aggregate_oneshot_cross_agent()
         multiturn = _aggregate_multiturn_aider()
-        permodel = _aggregate_permodel_oneshot()
 
         return {
-            "oneshot": oneshot,
-            "multiturn": multiturn,
-            "permodel": permodel,
+            "oneshot_table": static.get("oneshot_table", []),
+            "multiturn_lang_table": static.get("multiturn_lang_table", []),
+            "quant_comparison_table": static.get("quant_comparison_table", []),
+            "comparison_table": static.get("comparison_table", []),
+            "token_cost_table": static.get("token_cost_table", []),
+            "multiturn_leaderboard": static.get("multiturn_leaderboard", []),
+            # Live bonus
+            "oneshot_leaderboard": oneshot,
+            "multiturn_summary": multiturn,
         }
     except Exception as e:
         print(f"Benchmark data load error: {e}", file=sys.stderr)

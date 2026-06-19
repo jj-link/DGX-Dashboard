@@ -1,0 +1,581 @@
+{
+  "oneshot_table": [
+    {
+      "model": "Qwen3.6-27B",
+      "params": "27B",
+      "quant": "NVFP4",
+      "per_lang": {
+        "python": {
+          "ok": 16,
+          "total": 34,
+          "pct": 47.1
+        },
+        "javascript": {
+          "ok": 41,
+          "total": 49,
+          "pct": 83.7
+        },
+        "go": {
+          "ok": 16,
+          "total": 39,
+          "pct": 41.0
+        },
+        "rust": {
+          "ok": 14,
+          "total": 30,
+          "pct": 46.7
+        },
+        "cpp": {
+          "ok": 12,
+          "total": 26,
+          "pct": 46.2
+        },
+        "java": {
+          "ok": 28,
+          "total": 47,
+          "pct": 59.6
+        }
+      },
+      "overall": 56.4
+    },
+    {
+      "model": "Qwen3.6-27B",
+      "params": "27B",
+      "quant": "FP8",
+      "per_lang": {
+        "python": {
+          "ok": 15,
+          "total": 34,
+          "pct": 44.1
+        },
+        "javascript": {
+          "ok": 40,
+          "total": 49,
+          "pct": 81.6
+        },
+        "go": {
+          "ok": 15,
+          "total": 39,
+          "pct": 38.5
+        },
+        "rust": {
+          "ok": 15,
+          "total": 30,
+          "pct": 50.0
+        },
+        "cpp": {
+          "ok": 11,
+          "total": 26,
+          "pct": 42.3
+        },
+        "java": {
+          "ok": 28,
+          "total": 47,
+          "pct": 59.6
+        }
+      },
+      "overall": 55.1
+    },
+    {
+      "model": "Nex-N2-mini Mamba MoE",
+      "params": "35B",
+      "quant": "NVFP4",
+      "per_lang": {
+        "python": {
+          "ok": 13,
+          "total": 34,
+          "pct": 38.2
+        },
+        "javascript": {
+          "ok": 36,
+          "total": 49,
+          "pct": 73.5
+        },
+        "go": {
+          "ok": 13,
+          "total": 39,
+          "pct": 33.3
+        },
+        "rust": {
+          "ok": 12,
+          "total": 30,
+          "pct": 40.0
+        },
+        "cpp": {
+          "ok": 12,
+          "total": 26,
+          "pct": 46.2
+        },
+        "java": {
+          "ok": 24,
+          "total": 47,
+          "pct": 51.1
+        }
+      },
+      "overall": 48.9
+    },
+    {
+      "model": "Qwen3.6-35B-A3B MoE",
+      "params": "35B (3B active)",
+      "quant": "FP8",
+      "per_lang": {
+        "python": {
+          "ok": 13,
+          "total": 34,
+          "pct": 38.2
+        },
+        "javascript": {
+          "ok": 36,
+          "total": 49,
+          "pct": 73.5
+        },
+        "go": {
+          "ok": 14,
+          "total": 39,
+          "pct": 35.9
+        },
+        "rust": {
+          "ok": 9,
+          "total": 30,
+          "pct": 30.0
+        },
+        "cpp": {
+          "ok": 11,
+          "total": 26,
+          "pct": 42.3
+        },
+        "java": {
+          "ok": 26,
+          "total": 47,
+          "pct": 55.3
+        }
+      },
+      "overall": 48.4
+    },
+    {
+      "model": "Qwen3.5-122B-A10B MoE",
+      "params": "122B (10B active)",
+      "quant": "NVFP4",
+      "per_lang": {
+        "python": {
+          "ok": 10,
+          "total": 34,
+          "pct": 29.4
+        },
+        "javascript": {
+          "ok": 38,
+          "total": 49,
+          "pct": 77.6
+        },
+        "go": {
+          "ok": 13,
+          "total": 39,
+          "pct": 33.3
+        },
+        "rust": {
+          "ok": 9,
+          "total": 30,
+          "pct": 30.0
+        },
+        "cpp": {
+          "ok": 11,
+          "total": 26,
+          "pct": 42.3
+        },
+        "java": {
+          "ok": 26,
+          "total": 47,
+          "pct": 55.3
+        }
+      },
+      "overall": 47.6
+    },
+    {
+      "model": "Gemma4-12B-UD MTP",
+      "params": "12B",
+      "quant": "Q4_K_XL",
+      "per_lang": {
+        "python": {
+          "ok": 13,
+          "total": 34,
+          "pct": 38.2
+        },
+        "javascript": {
+          "ok": 31,
+          "total": 49,
+          "pct": 63.3
+        },
+        "go": {
+          "ok": 9,
+          "total": 39,
+          "pct": 23.1
+        },
+        "rust": {
+          "ok": 11,
+          "total": 30,
+          "pct": 36.7
+        },
+        "cpp": {
+          "ok": 11,
+          "total": 26,
+          "pct": 42.3
+        },
+        "java": {
+          "ok": 20,
+          "total": 47,
+          "pct": 42.6
+        }
+      },
+      "overall": 42.2
+    }
+  ],
+  "multiturn_lang_table": [
+    {
+      "model": "Qwen3.6-27B",
+      "params": "27B",
+      "quant": "FP8",
+      "per_lang": {
+        "python": 85,
+        "javascript": 82,
+        "go": 72,
+        "rust": 57,
+        "cpp": 81,
+        "java": 60
+      },
+      "pass1": "33%",
+      "pass2": "72%"
+    },
+    {
+      "model": "Qwen3.6-27B",
+      "params": "27B",
+      "quant": "BF16",
+      "per_lang": {
+        "python": 79,
+        "javascript": 82,
+        "go": 74,
+        "rust": 63,
+        "cpp": 69,
+        "java": 64
+      },
+      "pass1": "33%",
+      "pass2": "72%"
+    },
+    {
+      "model": "Qwen3.6-27B",
+      "params": "27B",
+      "quant": "NVFP4",
+      "per_lang": {
+        "python": 79,
+        "javascript": 78,
+        "go": 74,
+        "rust": 60,
+        "cpp": 69,
+        "java": 47
+      },
+      "pass1": "30%",
+      "pass2": "68%"
+    },
+    {
+      "model": "Qwen3.6-35B-A3B MoE",
+      "params": "35B (3B active)",
+      "quant": "FP8",
+      "per_lang": {
+        "python": 76,
+        "javascript": 76,
+        "go": 67,
+        "rust": 57,
+        "cpp": 65,
+        "java": 53
+      },
+      "pass1": "32%",
+      "pass2": "66%"
+    },
+    {
+      "model": "Qwen3.6-35B-A3B MoE",
+      "params": "35B (3B active)",
+      "quant": "BF16",
+      "per_lang": {
+        "python": 74,
+        "javascript": 78,
+        "go": 67,
+        "rust": 53,
+        "cpp": 73,
+        "java": 47
+      },
+      "pass1": "31%",
+      "pass2": "65%"
+    },
+    {
+      "model": "Qwen3.5-122B-A10B MoE",
+      "params": "122B (10B active)",
+      "quant": "NVFP4",
+      "per_lang": {
+        "python": 74,
+        "javascript": 63,
+        "go": 64,
+        "rust": 50,
+        "cpp": 69,
+        "java": 55
+      },
+      "pass1": "31%",
+      "pass2": "62%"
+    },
+    {
+      "model": "Qwen3.6-35B-A3B MoE",
+      "params": "35B (3B active)",
+      "quant": "NVFP4",
+      "per_lang": {
+        "python": 68,
+        "javascript": 69,
+        "go": 56,
+        "rust": 57,
+        "cpp": 73,
+        "java": 49
+      },
+      "pass1": "30%",
+      "pass2": "61%"
+    },
+    {
+      "model": "Gemma4-31B (NVIDIA)",
+      "params": "31B",
+      "quant": "NVFP4",
+      "per_lang": {
+        "python": 68,
+        "javascript": 61,
+        "go": 56,
+        "rust": 57,
+        "cpp": 69,
+        "java": 51
+      },
+      "pass1": "29%",
+      "pass2": "60%"
+    },
+    {
+      "model": "Gemma4-31B (Prithiv)",
+      "params": "31B",
+      "quant": "NVFP4",
+      "per_lang": {
+        "python": 68,
+        "javascript": 57,
+        "go": 62,
+        "rust": 53,
+        "cpp": 58,
+        "java": 53
+      },
+      "pass1": "28%",
+      "pass2": "58%"
+    }
+  ],
+  "quant_comparison_table": [
+    {
+      "model": "Qwen3.6-27B",
+      "params": "27B",
+      "bf16": "72%",
+      "fp8": "72%",
+      "nvfp4": "68%",
+      "delta": "-4pt (-5.6%)"
+    },
+    {
+      "model": "Qwen3.6-35B-A3B MoE",
+      "params": "35B (3B active)",
+      "bf16": "65%",
+      "fp8": "66%",
+      "nvfp4": "61%",
+      "delta": "-4pt (-6.2%)"
+    }
+  ],
+  "comparison_table": [
+    {
+      "model": "Qwen3.6-27B",
+      "params": "27B",
+      "config": "DFlash NVFP4",
+      "oneshot": "56.4%",
+      "multiturn": "N/A"
+    },
+    {
+      "model": "Qwen3.6-27B",
+      "params": "27B",
+      "config": "DFlash FP8",
+      "oneshot": "55.1%",
+      "multiturn": "N/A"
+    },
+    {
+      "model": "Qwen3.6-27B",
+      "params": "27B",
+      "config": "Standard FP8",
+      "oneshot": "N/A",
+      "multiturn": "72%"
+    },
+    {
+      "model": "Qwen3.6-27B",
+      "params": "27B",
+      "config": "Standard BF16",
+      "oneshot": "N/A",
+      "multiturn": "72%"
+    }
+  ],
+  "token_cost_table": [
+    {
+      "model": "Qwen3.6-27B DFlash",
+      "quant": "NVFP4",
+      "tests": 225,
+      "total": 1519840,
+      "avg": 6755,
+      "per_lang": {
+        "python": 7323,
+        "javascript": 6595,
+        "go": 7054,
+        "rust": 7443,
+        "cpp": 4206,
+        "java": 7233
+      }
+    },
+    {
+      "model": "Qwen3.6-27B DFlash",
+      "quant": "FP8",
+      "tests": 480,
+      "total": 2435059,
+      "avg": 5073,
+      "per_lang": {
+        "python": 6718,
+        "javascript": 7165,
+        "go": 7990,
+        "rust": 9460,
+        "cpp": 5759,
+        "java": 8029
+      }
+    },
+    {
+      "model": "Nex-N2-mini Mamba MoE",
+      "quant": "NVFP4",
+      "tests": 248,
+      "total": 2080104,
+      "avg": 8388,
+      "per_lang": {
+        "python": 10906,
+        "javascript": 8650,
+        "go": 7868,
+        "rust": 11100,
+        "cpp": 3403,
+        "java": 10579
+      }
+    },
+    {
+      "model": "Qwen3.6-35B-A3B MoE",
+      "quant": "FP8",
+      "tests": 523,
+      "total": 4073153,
+      "avg": 7788,
+      "per_lang": {
+        "python": 7751,
+        "javascript": 7813,
+        "go": 8224,
+        "rust": 11537,
+        "cpp": 4344,
+        "java": 8494
+      }
+    },
+    {
+      "model": "Qwen3.5-122B-A10B MoE",
+      "quant": "NVFP4",
+      "tests": 256,
+      "total": 1422352,
+      "avg": 5556,
+      "per_lang": {
+        "python": 9448,
+        "javascript": 2582,
+        "go": 5972,
+        "rust": 9334,
+        "cpp": 3276,
+        "java": 4091
+      }
+    },
+    {
+      "model": "Gemma4-12B-UD MTP",
+      "quant": "Q4_K_XL",
+      "tests": 227,
+      "total": 665311,
+      "avg": 2931,
+      "per_lang": {
+        "python": 2189,
+        "javascript": 3031,
+        "go": 2371,
+        "rust": 2764,
+        "cpp": 1687,
+        "java": 2925
+      }
+    }
+  ],
+  "multiturn_leaderboard": [
+    {
+      "model": "Qwen3.6-27B",
+      "quant": "FP8",
+      "pass1": "33%",
+      "pass2": "72%",
+      "total_tokens": 4563938,
+      "prompt_tokens": 2093751,
+      "completion_tokens": 2470187,
+      "avg_per_test": 20284
+    },
+    {
+      "model": "Qwen3.6-27B",
+      "quant": "BF16",
+      "pass1": "33%",
+      "pass2": "72%",
+      "total_tokens": 4457426,
+      "prompt_tokens": 1954718,
+      "completion_tokens": 2502708,
+      "avg_per_test": 19810
+    },
+    {
+      "model": "Qwen3.6-27B",
+      "quant": "NVFP4",
+      "pass1": "30%",
+      "pass2": "68%",
+      "total_tokens": 4564695,
+      "prompt_tokens": 2202838,
+      "completion_tokens": 2361857,
+      "avg_per_test": 20287
+    },
+    {
+      "model": "Qwen3.6-35B-A3B MoE",
+      "quant": "FP8",
+      "pass1": "32%",
+      "pass2": "66%",
+      "total_tokens": 5235751,
+      "prompt_tokens": 2545878,
+      "completion_tokens": 2689873,
+      "avg_per_test": 23270
+    },
+    {
+      "model": "Qwen3.6-35B-A3B MoE",
+      "quant": "BF16",
+      "pass1": "31%",
+      "pass2": "65%",
+      "total_tokens": 4611527,
+      "prompt_tokens": 1944182,
+      "completion_tokens": 2667345,
+      "avg_per_test": 20495
+    },
+    {
+      "model": "Qwen3.6-35B-A3B MoE",
+      "quant": "NVFP4",
+      "pass1": "30%",
+      "pass2": "61%",
+      "total_tokens": 4797791,
+      "prompt_tokens": 2323052,
+      "completion_tokens": 2474739,
+      "avg_per_test": 21323
+    },
+    {
+      "model": "Qwen3.5-122B-A10B MoE",
+      "quant": "NVFP4",
+      "pass1": "31%",
+      "pass2": "62%",
+      "total_tokens": 2736370,
+      "prompt_tokens": 2124912,
+      "completion_tokens": 611458,
+      "avg_per_test": 12161
+    }
+  ]
+}
