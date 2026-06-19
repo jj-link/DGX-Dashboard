@@ -9,6 +9,7 @@ Live monitoring dashboard for DGX Spark (GB10) — GPU hardware stats + inferenc
 - **System**: CPU load, RAM usage, uptime
 - **Auto-refresh**: configurable poll interval (default 3s)
 - **Dark theme**: terminal-friendly, no external dependencies
+- **Benchmarks dashboard**: 5 view modes for benchmark result analysis (see below)
 
 ## Quick start
 
@@ -45,6 +46,32 @@ local = llamacpp,http://localhost:8080
 ```
 
 Server types: `sglang`, `vllm`, `llamacpp`
+
+### Benchmarks
+
+Add a `[benchmarks]` section to `config.ini` with paths to your benchmark result directories:
+
+```ini
+[benchmarks]
+results_dir = /path/to/benchmark/results
+aider_benchmarks_dir = /path/to/benchmark/aider/tmp.benchmarks
+```
+
+**Oneshot data** (`results_dir`):
+- `cross-agent-oneshot-*.json` — cross-agent runs with opencode results per model/language
+- `*-oneshot-*.json` — per-model runs for quantization/token cost views
+
+**Multi-turn data** (`aider_benchmarks_dir`):
+- `*-aiderdkr-*/` sweep directories with `_stats.yml` and `.aider.results.json` files
+
+Benchmarks data is cached for 5 minutes. The "Benchmarks" tab stops live polling automatically.
+
+**5 sub-views:**
+1. **Oneshot** — opencode pass rate per model and language from cross-agent runs
+2. **Multi-turn** — aider sweep pass@1/pass@2 with per-language breakdowns
+3. **Language Heatmap** — color-coded pass rates across models and languages
+4. **Quantization Impact** — per-model pass rates to compare quantization levels
+5. **Token Cost** — prompt/completion token averages and totals per model
 
 ## Running as a service
 

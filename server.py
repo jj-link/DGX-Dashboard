@@ -2,6 +2,7 @@
 """DGX Spark Dashboard - GPU + inference server monitoring."""
 
 import configparser
+import glob
 import os
 import re
 import socket
@@ -20,7 +21,7 @@ app.jinja_env.auto_reload = True
 # ── Config ───────────────────────────────────────────────────────────────────
 
 CONFIG_PATH = os.environ.get("DASHBOARD_CONFIG",
-                             os.path.join(os.path.dirname(os.path.abspath(__file__)), "config.ini"))
+                              os.path.join(os.path.dirname(os.path.abspath(__file__)), "config.ini"))
 config = configparser.ConfigParser()
 config.read(CONFIG_PATH)
 
@@ -29,6 +30,9 @@ PORT = config.getint("server", "port", fallback=9000)
 REFRESH = config.getint("server", "refresh_interval", fallback=3)
 AUTH_USER = config.get("server", "auth_user", fallback="")
 AUTH_PASS = config.get("server", "auth_password", fallback="")
+
+BENCHMARKS_DIR = config.get("benchmarks", "results_dir", fallback="")
+AIDER_BENCHMARKS_DIR = config.get("benchmarks", "aider_benchmarks_dir", fallback="")
 
 # Parse inference servers
 INFERENCE_SERVERS = {}
@@ -490,7 +494,218 @@ def _query_llamacpp(url, result):
         pass
 
 
-# ── System stats ─────────────────────────────────────────────────────────────
+# ── Benchmark data ───────────────────────────────────────────────────────────
+
+_benchmark_data = None
+benchmark_cache_time = 0
+BENCHMARK_CACHE_TTL = 300  # 5 min
+
+
+def _parse_aider_stats_yml(path):
+    """Parse aider _stats.yml files (simple key-value text, not real YAML)."""
+    data = {}
+    try:
+        with open(path) as f:
+            for line in f:
+                line = line.strip()
+                if not line or line.startswith("─") or line.startswith("costs") or line.startswith("/") or line.startswith("- dirname"):
+                    continue
+                m = re.match(r"^(\w+):\s*(.+)$", line)
+                if m:
+                    k, v = m.group(1), m.group(2).strip()
+                    try:
+                        v = int(v) if "." not in v else float(v)
+                    except (ValueError, TypeError):
+                        pass
+                    data[k] = v
+    except Exception:
+        pass
+    return data
+
+
+def _aggregate_oneshot_cross_agent():
+    """Load latest cross-agent-oneshot JSONs with opencode results, aggregate per model/lang."""
+    if not BENCHMARKS_DIR:
+        return {}
+
+    pattern = os.path.join(BENCHMARKS_DIR, "cross-agent-oneshot-*.json")
+    files = sorted(glob.glob(pattern))
+
+    best_ts = {}
+    for f in files:
+        ts_match = re.search(r"(\d{14})\.json$", f)
+        ts = ts_match.group(1) if ts_match else "0"
+        try:
+            with open(f) as fp:
+                data = json.load(fp)
+        except Exception:
+            continue
+        agent_models = data.get("agent_models", {})
+        opencode_model = agent_models.get("opencode", "")
+        if not opencode_model.startswith("local"):
+            continue
+        key = opencode_model.replace("local-", "").replace("local_", "")
+        if key not in best_ts or ts > best_ts[key]:
+            best_ts[key] = ts
+
+    aggregated = {}
+    for f in files:
+        ts_match = re.search(r"(\d{14})\.json$", f)
+        ts = ts_match.group(1) if ts_match else "0"
+        try:
+            with open(f) as fp:
+                data = json.load(fp)
+        except Exception:
+            continue
+        agent_models = data.get("agent_models", {})
+        opencode_model = agent_models.get("opencode", "")
+        if not opencode_model.startswith("local"):
+            continue
+        key = opencode_model.replace("local-", "").replace("local_", "")
+        if ts != best_ts.get(key):
+            continue
+        for r in data.get("results", []):
+            if r.get("agent") != "opencode":
+                continue
+            lang = r.get("lang")
+            ok = r.get("ok", False)
+            if key not in aggregated:
+                aggregated[key] = {}
+            if lang not in aggregated[key]:
+                aggregated[key][lang] = {"ok": 0, "total": 0}
+            aggregated[key][lang]["total"] += 1
+            if ok:
+                aggregated[key][lang]["ok"] += 1
+
+    return aggregated
+
+
+def _aggregate_multiturn_aider():
+    """Load multi-turn results from aider sweep directories."""
+    if not AIDER_BENCHMARKS_DIR:
+        return []
+
+    sweeps = sorted(glob.glob(os.path.join(AIDER_BENCHMARKS_DIR, "*-aiderdkr-*")))
+    result = []
+    for sweep_dir in sweeps:
+        stats_path = os.path.join(sweep_dir, "_stats.yml")
+        if not os.path.exists(stats_path):
+            continue
+        stats = _parse_aider_stats_yml(stats_path)
+        model = stats.get("model", "unknown")
+
+        per_lang = {}
+        for lang in ["python", "javascript", "go", "rust", "cpp", "java"]:
+            lang_dir = os.path.join(sweep_dir, lang)
+            if not os.path.isdir(lang_dir):
+                continue
+            ok_count = 0
+            total_count = 0
+            for sub in os.listdir(lang_dir):
+                rpath = os.path.join(lang_dir, sub, "exercises", "practice")
+                if os.path.isdir(rpath):
+                    for ex in os.listdir(rpath):
+                        rf = os.path.join(rpath, ex, ".aider.results.json")
+                        if os.path.exists(rf):
+                            try:
+                                with open(rf) as f:
+                                    rd = json.load(f)
+                                total_count += 1
+                                outcomes = rd.get("tests_outcomes", [])
+                                if outcomes and all(outcomes):
+                                    ok_count += 1
+                            except Exception:
+                                pass
+            per_lang[lang] = {
+                "ok": ok_count,
+                "total": total_count,
+                "pass": round(ok_count / total_count * 100, 0) if total_count else 0,
+            }
+
+        result.append({
+            "model": model,
+            "pass1": stats.get("pass_rate_1", 0),
+            "pass2": stats.get("pass_rate_2", 0),
+            "per_lang": per_lang,
+            "prompt_tokens": stats.get("prompt_tokens", 0),
+            "completion_tokens": stats.get("completion_tokens", 0),
+            "total": stats.get("total_tests", 0),
+        })
+
+    return sorted(result, key=lambda x: x["pass2"], reverse=True)
+
+
+def _aggregate_permodel_oneshot():
+    """Load per-model oneshot JSON files for quantization/tokencost views."""
+    if not BENCHMARKS_DIR:
+        return []
+    pattern = os.path.join(BENCHMARKS_DIR, "*-oneshot-*.json")
+    files = sorted(glob.glob(pattern))
+
+    best_by_alias = {}
+    for f in files:
+        try:
+            with open(f) as fp:
+                data = json.load(fp)
+        except Exception:
+            continue
+        alias = data.get("alias", os.path.basename(f))
+        ts = data.get("started", "0")
+        if alias not in best_by_alias or ts > best_by_alias[alias][0]:
+            best_by_alias[alias] = (ts, data)
+
+    result = []
+    for alias, (ts, data) in best_by_alias.items():
+        res = data.get("results", [])
+        if not res:
+            continue
+        ok = sum(1 for r in res if r.get("ok"))
+        total = len(res)
+        prompt = sum(r.get("prompt_tokens", 0) for r in res)
+        completion = sum(r.get("completion_tokens", 0) for r in res)
+        result.append({
+            "alias": alias,
+            "served": data.get("served", alias),
+            "passed": ok,
+            "total": total,
+            "pass_rate": round(ok / total * 100, 1) if total else 0,
+            "prompt_tokens": prompt,
+            "completion_tokens": completion,
+            "avg_prompt": round(prompt / total, 0) if total else 0,
+            "avg_completion": round(completion / total, 0) if total else 0,
+            "avg_total_tokens": round((prompt + completion) / total, 0) if total else 0,
+        })
+    return result
+
+
+def load_benchmark_data():
+    """Aggregate all benchmark data from JSON files and aider sweeps."""
+    try:
+        oneshot = _aggregate_oneshot_cross_agent()
+        multiturn = _aggregate_multiturn_aider()
+        permodel = _aggregate_permodel_oneshot()
+
+        return {
+            "oneshot": oneshot,
+            "multiturn": multiturn,
+            "permodel": permodel,
+        }
+    except Exception as e:
+        print(f"Benchmark data load error: {e}", file=sys.stderr)
+        return {}
+
+
+def _get_benchmark_data():
+    """Get benchmark data with TTL cache."""
+    global _benchmark_data, benchmark_cache_time
+    now = time.time()
+    if _benchmark_data is not None and (now - benchmark_cache_time) < BENCHMARK_CACHE_TTL:
+        return _benchmark_data
+
+    _benchmark_data = load_benchmark_data()
+    benchmark_cache_time = now
+    return _benchmark_data
+
 
 def get_system_stats():
     stats = {
@@ -528,8 +743,6 @@ def get_system_stats():
     return stats
 
 
-# ── Auth ─────────────────────────────────────────────────────────────────────
-
 def check_auth():
     if not AUTH_USER or not AUTH_PASS:
         return True
@@ -551,6 +764,11 @@ def before_req():
 @app.route("/")
 def index():
     return render_template("index.html", refresh_interval=REFRESH)
+
+
+@app.route("/api/benchmarks")
+def api_benchmarks():
+    return jsonify(_get_benchmark_data() or {})
 
 
 @app.route("/api/stats")
