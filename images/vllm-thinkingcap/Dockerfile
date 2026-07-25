@@ -12,7 +12,7 @@ COPY patches/vllm-0.24-align-upstream/vllm/v1/core/sched/scheduler.py /usr/local
 COPY patches/vllm-0.24-align-upstream/vllm/v1/attention/backends/gdn_attn.py /usr/local/lib/python3.12/dist-packages/vllm/v1/attention/backends/gdn_attn.py
 COPY patches/vllm-0.24-align-upstream/vllm/platforms/interface.py /usr/local/lib/python3.12/dist-packages/vllm/platforms/interface.py
 COPY patches/vllm-0.24-align-upstream/vllm/v1/core/kv_cache_utils.py /usr/local/lib/python3.12/dist-packages/vllm/v1/core/kv_cache_utils.py
-COPY moe_configs/E=256,N=512,device_name=NVIDIA_RTX_PRO_6000_Blackwell_Workstation_Edition,dtype=fp8_w8a8,block_shape=[128,128].json /usr/local/lib/python3.12/dist-packages/vllm/model_executor/layers/fused_moe/configs/E=256,N=512,device_name=NVIDIA_RTX_PRO_6000_Blackwell_Workstation_Edition,dtype=fp8_w8a8,block_shape=[128,128].json
+COPY moe_configs/ /usr/local/lib/python3.12/dist-packages/vllm/model_executor/layers/fused_moe/configs/
 COPY patches/qwen3-dflash-v1-mixed.py /usr/local/lib/python3.12/dist-packages/vllm/model_executor/models/qwen3_dflash.py
 COPY patches/vllm-0.24-align-upstream/vllm/v1/spec_decode/dflash.py /usr/local/lib/python3.12/dist-packages/vllm/v1/spec_decode/dflash.py
 COPY patches/vllm-0.24-align-upstream/vllm/v1/cudagraph_dispatcher.py /usr/local/lib/python3.12/dist-packages/vllm/v1/cudagraph_dispatcher.py
