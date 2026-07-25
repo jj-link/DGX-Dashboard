@@ -1,21 +1,23 @@
 #!/usr/bin/env bash
 set -euo pipefail
-ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd -P)"
-BEFORE="$(git -C "$ROOT" status --porcelain=v1 --untracked-files=all)"
+CONTROL_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd -P)"
+REPO_ROOT="$(cd "$CONTROL_ROOT/.." && pwd -P)"
+BEFORE="$(git -C "$REPO_ROOT" status --porcelain=v1 --untracked-files=all)"
 
 while IFS= read -r -d '' script; do
-  bash -n "$ROOT/$script"
-done < <(git -C "$ROOT" ls-files -z -- '*.sh')
+  bash -n "$REPO_ROOT/$script"
+done < <(git -C "$REPO_ROOT" ls-files -z -- '*.sh')
 
-"$ROOT/tests/bootstrap.sh"
-"$ROOT/tests/dispatcher.sh"
-"$ROOT/tests/runtime.sh"
-"$ROOT/tests/cluster.sh"
-"$ROOT/tests/sync.sh"
-"$ROOT/tests/migration.sh"
-"$ROOT/tests/repository.sh"
+(cd "$REPO_ROOT" && python3 -m pytest -q)
+"$CONTROL_ROOT/tests/bootstrap.sh"
+"$CONTROL_ROOT/tests/dispatcher.sh"
+"$CONTROL_ROOT/tests/runtime.sh"
+"$CONTROL_ROOT/tests/cluster.sh"
+"$CONTROL_ROOT/tests/sync.sh"
+"$CONTROL_ROOT/tests/migration.sh"
+"$CONTROL_ROOT/tests/repository.sh"
 
-AFTER="$(git -C "$ROOT" status --porcelain=v1 --untracked-files=all)"
+AFTER="$(git -C "$REPO_ROOT" status --porcelain=v1 --untracked-files=all)"
 if [[ "$AFTER" != "$BEFORE" ]]; then
   printf 'test suite changed the checkout\n--- before ---\n%s\n--- after ---\n%s\n' "$BEFORE" "$AFTER" >&2
   exit 1

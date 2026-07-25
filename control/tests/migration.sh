@@ -1,8 +1,9 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd -P)"
-exec python3 - "$ROOT" <<'PY'
+CONTROL_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd -P)"
+REPO_ROOT="$(cd "$CONTROL_ROOT/.." && pwd -P)"
+exec python3 - "$CONTROL_ROOT" "$REPO_ROOT" <<'PY'
 from __future__ import annotations
 
 import csv
@@ -16,6 +17,7 @@ import subprocess
 import sys
 
 ROOT = Path(sys.argv[1]).resolve()
+REPO_ROOT = Path(sys.argv[2]).resolve()
 MANIFEST = ROOT / "migration" / "source-manifest.tsv"
 ALLOWED_DISPOSITIONS = {
     "import",
@@ -36,6 +38,9 @@ REMOTE_SOURCE_ROOT = PurePosixPath("/home/jjlink/inference")
 REMOTE_ARCHIVE_ROOT = PurePosixPath(
     "/home/jjlink/inference.pre-standardize-20260724-c081345"
 )
+SOURCE_COMMIT = "8b6a019d2614c5883c1b115fbd530e2ad56081ef"
+DASHBOARD_COMMIT = "e85268cddf8a8fefbbf6b3a8b1c4178b7e5e02c9"
+IMPORT_COMMIT = "1942562296078440a4b7caa0d48ed9562dc3e44a"
 
 
 def fail(message: str) -> None:
@@ -48,6 +53,19 @@ def sha256(path: Path) -> str:
         for chunk in iter(lambda: stream.read(1024 * 1024), b""):
             digest.update(chunk)
     return digest.hexdigest()
+
+def git(*arguments: str) -> str:
+    completed = subprocess.run(
+        ["git", "-C", str(REPO_ROOT), *arguments],
+        text=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+    )
+    if completed.returncode != 0:
+        raise SystemExit(
+            completed.stderr.strip() or f"git {' '.join(arguments)} failed"
+        )
+    return completed.stdout.strip()
 
 
 if not MANIFEST.is_file():
@@ -80,6 +98,30 @@ remote_sources: dict[str, list[dict[str, str]]] = {
     "spark3-ts": [],
 }
 local_sources: list[dict[str, str]] = []
+
+parents = git("rev-list", "--parents", "-n", "1", IMPORT_COMMIT).split()
+if not parents or parents[0] != IMPORT_COMMIT:
+    fail(f"import commit {IMPORT_COMMIT} is unavailable")
+else:
+    for expected_parent in (DASHBOARD_COMMIT, SOURCE_COMMIT):
+        if expected_parent not in parents[1:]:
+            fail(f"import commit is missing parent {expected_parent}")
+git("merge-base", "--is-ancestor", DASHBOARD_COMMIT, "HEAD")
+git("merge-base", "--is-ancestor", SOURCE_COMMIT, "HEAD")
+source_tree = git("rev-parse", f"{SOURCE_COMMIT}^{{tree}}")
+imported_tree = git("rev-parse", f"{IMPORT_COMMIT}:control")
+if source_tree != imported_tree:
+    fail(
+        f"imported control tree {imported_tree} does not match "
+        f"source tree {source_tree}"
+    )
+baseline_destinations = {
+    path.removeprefix("control/")
+    for path in git(
+        "ls-tree", "-r", "--name-only", IMPORT_COMMIT, "--", "control"
+    ).splitlines()
+    if path.startswith("control/")
+}
 
 for line_number, row in enumerate(rows, start=2):
     prefix = f"manifest line {line_number}"
@@ -125,12 +167,18 @@ for line_number, row in enumerate(rows, start=2):
                 fail(f"{prefix}: destination must stay below the repository: {destination!r}")
             if not HEX64.fullmatch(destination_hash):
                 fail(f"{prefix}: destination_sha256 must be 64 lowercase hex characters")
-            else:
+            elif destination not in baseline_destinations:
                 destination_path = ROOT.joinpath(*pure_destination.parts)
                 if not destination_path.is_file():
-                    fail(f"{prefix}: destination is missing or not a file: {destination}")
+                    fail(
+                        f"{prefix}: destination was not imported and is missing: "
+                        f"{destination}"
+                    )
                 elif sha256(destination_path) != destination_hash:
-                    fail(f"{prefix}: destination hash mismatch: {destination}")
+                    fail(
+                        f"{prefix}: destination was not imported and has the wrong hash: "
+                        f"{destination}"
+                    )
     elif disposition in NO_DESTINATION_DISPOSITIONS:
         if destination != "-" or destination_hash != "-":
             fail(f"{prefix}: {disposition} must not name a destination")
@@ -267,6 +315,7 @@ if failures:
 print(
     "migration gate passed: "
     f"{len(rows)} manifest rows, "
+    f"{len(baseline_destinations)} imported paths, "
     f"{sum(len(records) for records in remote_sources.values())} remote source records"
 )
 PY

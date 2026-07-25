@@ -1,8 +1,9 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd -P)"
-exec python3 - "$ROOT" <<'PY'
+CONTROL_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd -P)"
+REPO_ROOT="$(cd "$CONTROL_ROOT/.." && pwd -P)"
+exec python3 - "$REPO_ROOT" "$CONTROL_ROOT" <<'PY'
 from __future__ import annotations
 
 from collections import defaultdict
@@ -14,7 +15,10 @@ import subprocess
 import sys
 
 ROOT = Path(sys.argv[1]).resolve()
+CONTROL_ROOT = Path(sys.argv[2]).resolve()
+CONTROL_PREFIX = PurePosixPath(CONTROL_ROOT.relative_to(ROOT).as_posix())
 MAX_BLOB_BYTES = 100 * 1024 * 1024
+LEGACY_DASHBOARD_COMMIT = "e85268cddf8a8fefbbf6b3a8b1c4178b7e5e02c9"
 WEIGHT_SUFFIXES = {
     ".safetensors",
     ".gguf",
@@ -124,9 +128,32 @@ def parse_history() -> list[tuple[str, str]]:
                 entries.append((object_id, decode_path(raw_path)))
     return entries
 
+def parse_commit(commit: str) -> set[tuple[str, str]]:
+    entries: set[tuple[str, str]] = set()
+    tree = git("ls-tree", "-r", "-z", "--full-tree", commit)
+    for record in tree.split(b"\0"):
+        if not record:
+            continue
+        metadata, raw_path = record.split(b"\t", 1)
+        mode, object_type, object_id = metadata.decode("ascii").split()
+        if object_type == "commit" or mode == "160000":
+            raise SystemExit(
+                f"submodule entry is not permitted in {commit}: {decode_path(raw_path)}"
+            )
+        if object_type == "blob":
+            entries.add((object_id, decode_path(raw_path)))
+    return entries
+
+
+def parse_commit_history(commit: str) -> set[tuple[str, str]]:
+    entries: set[tuple[str, str]] = set()
+    for revision in git("rev-list", commit).decode("ascii").splitlines():
+        entries.update(parse_commit(revision))
+    return entries
+
 
 def dependency_targets() -> list[PurePosixPath]:
-    manifest = ROOT / "dependencies" / "manifest.tsv"
+    manifest = CONTROL_ROOT / "dependencies" / "manifest.tsv"
     if not manifest.is_file():
         raise SystemExit(f"missing dependency manifest: {manifest}")
     with manifest.open(newline="", encoding="utf-8") as stream:
@@ -136,15 +163,19 @@ def dependency_targets() -> list[PurePosixPath]:
         target = PurePosixPath(row["target"])
         if target.is_absolute() or ".." in target.parts:
             raise SystemExit(f"invalid dependency target: {row['target']!r}")
-        targets.append(target)
+        targets.extend((target, CONTROL_PREFIX / target))
     return targets
 
 
 def path_violation(path_text: str, targets: list[PurePosixPath]) -> str | None:
     path = PurePosixPath(path_text)
-    parts = path.parts
+    try:
+        scoped_path = path.relative_to(CONTROL_PREFIX)
+    except ValueError:
+        scoped_path = path
+    parts = scoped_path.parts
     lower_parts = tuple(part.lower() for part in parts)
-    name = path.name
+    name = scoped_path.name
     lower_name = name.lower()
 
     for target in targets:
@@ -189,15 +220,22 @@ def path_violation(path_text: str, targets: list[PurePosixPath]) -> str | None:
 
 index_entries = parse_index()
 history_entries = parse_history()
+legacy_dashboard_entries = parse_commit_history(LEGACY_DASHBOARD_COMMIT)
 entries = index_entries + history_entries
 targets = dependency_targets()
 failures: list[str] = []
 object_paths: dict[str, set[str]] = defaultdict(set)
 
-for object_id, path in entries:
+for object_id, path in index_entries:
     object_paths[object_id].add(path)
     violation = path_violation(path, targets)
     if violation:
+        failures.append(f"{path}: {violation}")
+
+for object_id, path in history_entries:
+    object_paths[object_id].add(path)
+    violation = path_violation(path, targets)
+    if violation and (object_id, path) not in legacy_dashboard_entries:
         failures.append(f"{path}: {violation}")
 
 process = subprocess.Popen(
