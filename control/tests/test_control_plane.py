@@ -37,6 +37,26 @@ def run(command: list[str], environment: dict[str, str], timeout: int = 60) -> s
     )
 
 
+def assert_hardened_ssh(arguments: list[bytes], host: str, remote_command: str | None = None) -> str:
+    decoded = [argument.decode() for argument in arguments]
+    expected_prefix = [
+        "-T",
+        "-o", "BatchMode=yes",
+        "-o", "StrictHostKeyChecking=yes",
+        "-o", "ForwardAgent=no",
+        "-o", "ClearAllForwardings=yes",
+        "-o", "RequestTTY=no",
+        "-o", "ConnectTimeout=20",
+        "-o", "ConnectionAttempts=3",
+        host,
+    ]
+    assert decoded[: len(expected_prefix)] == expected_prefix
+    assert len(decoded) == len(expected_prefix) + 1
+    if remote_command is not None:
+        assert decoded[-1] == remote_command
+    return decoded[-1]
+
+
 def parse_assignments(path: pathlib.Path) -> dict[str, str]:
     return dict(line.split("=", 1) for line in path.read_text(encoding="utf-8").splitlines())
 
@@ -202,8 +222,7 @@ def test_dispatcher() -> None:
             assert "remote stderr\n" in remote.stderr
             assert f"target={target} host={host} profile=spark engine=vllm" in remote.stderr
             ssh_arguments = ssh_log.read_bytes().split(b"\0")[:-1]
-            assert ssh_arguments[6].decode() == host
-            remote_command = ssh_arguments[7].decode()
+            remote_command = assert_hardened_ssh(ssh_arguments, host)
             assert expected_commit in remote_command
             assert "HF_CACHE=" in remote_command
             assert "ATTENTION_BACKEND=FLASH\\ INFER" in remote_command
@@ -322,8 +341,7 @@ def test_benchmark_dispatcher() -> None:
                 assert f"target={target} benchmark=oneshot endpoint={endpoint}" in completed.stderr
             else:
                 ssh_arguments = ssh_log.read_bytes().split(b"\0")[:-1]
-                assert ssh_arguments[6].decode() == host
-                assert ssh_arguments[7].decode() == "exec tailscale ip -4"
+                assert_hardened_ssh(ssh_arguments, host, "exec tailscale ip -4")
                 assert f"target={target} host={host} benchmark=oneshot endpoint={endpoint}" in completed.stderr
 
         custom_port = run(

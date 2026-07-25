@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import base64
 import json
 import os
 import re
@@ -9,7 +10,7 @@ import sys
 import tempfile
 import threading
 import time
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from typing import Callable, Iterator
 
 from dgx_dashboard.config import BenchmarkSettings
@@ -230,6 +231,13 @@ class ResultIndex:
                 self._persist()
             return self._summaries_unlocked()
 
+    def summaries_for_run(self, run_id: str) -> list[dict[str, object]]:
+        return [
+            summary
+            for summary in self.refresh()
+            if summary.get("kind") == "oneshot" and summary.get("run_id") == run_id
+        ]
+
     def _summaries_unlocked(self) -> list[dict[str, object]]:
         summaries: list[dict[str, object]] = []
         for relative, record in self._files.items():
@@ -388,3 +396,52 @@ class BenchmarkResults:
         with self._lock:
             self._cache = None
             self._cache_time = 0.0
+
+    def run_links(self, run_id: str) -> list[dict[str, str]]:
+        self.invalidate()
+        links: list[dict[str, str]] = []
+        for summary in self.index.summaries_for_run(run_id):
+            relative = summary.get("path")
+            if not isinstance(relative, str):
+                continue
+            token = base64.urlsafe_b64encode(relative.encode("utf-8")).decode("ascii").rstrip("=")
+            label = " · ".join(
+                value
+                for value in (
+                    _safe_string(summary.get("target")),
+                    _safe_string(summary.get("started"), _safe_string(summary.get("timestamp"))),
+                )
+                if value
+            )
+            links.append(
+                {
+                    "label": label or _safe_string(summary.get("alias"), "oneshot result"),
+                    "url": f"/api/benchmarks/results/{token}",
+                }
+            )
+        return links
+
+    def read_indexed_result(self, token: str, *, max_bytes: int = 16 * 1024 * 1024) -> bytes:
+        if not token or any(character not in "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_" for character in token):
+            raise FileNotFoundError
+        try:
+            padded = token + "=" * (-len(token) % 4)
+            relative_text = base64.urlsafe_b64decode(padded.encode("ascii")).decode("utf-8")
+        except (ValueError, UnicodeError):
+            raise FileNotFoundError from None
+        if base64.urlsafe_b64encode(relative_text.encode("utf-8")).decode("ascii").rstrip("=") != token:
+            raise FileNotFoundError
+        relative = PurePosixPath(relative_text)
+        if relative.is_absolute() or not relative.parts or any(part in {"", ".", ".."} for part in relative.parts):
+            raise FileNotFoundError
+        indexed = {item.get("path") for item in self.index.refresh()}
+        if relative.as_posix() not in indexed:
+            raise FileNotFoundError
+        root = self._settings.results_dir.resolve(strict=True)
+        path = root.joinpath(*relative.parts).resolve(strict=True)
+        if not path.is_file() or not path.is_relative_to(root):
+            raise FileNotFoundError
+        size = path.stat().st_size
+        if size > max_bytes:
+            raise ValueError("indexed result exceeds the response limit")
+        return path.read_bytes()

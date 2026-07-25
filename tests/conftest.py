@@ -10,6 +10,7 @@ import pytest
 from dgx_dashboard import create_app
 from dgx_dashboard.config import (
     BenchmarkSettings,
+    ControlSettings,
     DashboardSettings,
     InferenceServerSettings,
     ServerSettings,
@@ -41,6 +42,17 @@ def settings(tmp_path: Path) -> DashboardSettings:
             results_dir=results,
             aider_benchmarks_dir=tmp_path / "aider-benchmarks",
             result_index_path=tmp_path / "result-index.json",
+        ),
+        control=ControlSettings(
+            enabled=False,
+            allowed_origin="",
+            wrapper_root=tmp_path,
+            state_dir=tmp_path / "runs",
+            polyglot_root=tmp_path / "polyglot-benchmark",
+            targets=("local",),
+            retention=25,
+            serving_timeout=300,
+            benchmark_timeout=3600,
         ),
     )
 
@@ -101,6 +113,12 @@ class _StaticBenchmarks:
 
     def get(self) -> dict[str, object]:
         return self._payload
+
+    def run_links(self, _run_id: str) -> list[dict[str, str]]:
+        return []
+
+    def read_indexed_result(self, _token: str) -> bytes:
+        raise FileNotFoundError
 
 
 @pytest.fixture

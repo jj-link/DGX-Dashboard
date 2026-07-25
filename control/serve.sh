@@ -162,7 +162,7 @@ if [[ "$target" == cluster ]]; then
   mapfile -d '' -t resolved < <(resolve_cluster_script "$engine" "$artifact" "$action")
   (( ${#resolved[@]} == 2 )) || exit 1
   script="${resolved[1]}"
-  printf 'target=cluster engine=%s artifact=%s action=%s script=%s\n' "$engine" "$artifact" "$action" "$script" >&2
+  printf 'target=cluster engine=%s artifact=%s action=%s\n' "$engine" "$artifact" "$action" >&2
   exec "$script" "$@"
 fi
 
@@ -176,7 +176,7 @@ if [[ "$target" == local ]]; then
   (( ${#resolved[@]} == 2 )) || exit 1
   package="${resolved[0]}"
   script="${resolved[1]}"
-  printf 'target=local profile=rtx6000 engine=%s artifact=%s action=%s script=%s\n' "$engine" "$artifact" "$single_action" "$script" >&2
+  printf 'target=local profile=rtx6000 engine=%s artifact=%s action=%s\n' "$engine" "$artifact" "$single_action" >&2
   exec "$CONTROL_ROOT/runtime/rtx6000/run_${engine}_docker.sh" "$package" "$@"
 fi
 
@@ -189,7 +189,7 @@ expected_commit="$(controller_commit)"
 mapfile -d '' -t resolved < <(resolve_single_script "$engine" spark "$artifact")
 (( ${#resolved[@]} == 2 )) || exit 1
 script="${resolved[1]}"
-printf 'target=%s host=%s profile=spark engine=%s artifact=%s action=%s script=%s\n' "$target" "$host" "$engine" "$artifact" "$single_action" "$script" >&2
+printf 'target=%s host=%s profile=spark engine=%s artifact=%s action=%s\n' "$target" "$host" "$engine" "$artifact" "$single_action" >&2
 command=(env)
 for variable in "${single_control_environment[@]}" "${single_engine_environment[@]}"; do
   [[ -v "$variable" ]] && command+=("$variable=${!variable}")
@@ -199,4 +199,4 @@ quoted=''
 for argument in "${command[@]}"; do
   printf -v quoted '%s %q' "$quoted" "$argument"
 done
-exec ssh -o BatchMode=yes -o ConnectTimeout=20 -o ConnectionAttempts=3 "$host" "exec$quoted"
+exec ssh -T -o BatchMode=yes -o StrictHostKeyChecking=yes -o ForwardAgent=no -o ClearAllForwardings=yes -o RequestTTY=no -o ConnectTimeout=20 -o ConnectionAttempts=3 "$host" "exec$quoted"

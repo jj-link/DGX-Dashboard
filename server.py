@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 from dgx_dashboard import create_app, load_config
+from waitress import serve
 
 
 SETTINGS = load_config()
@@ -17,7 +18,7 @@ REFRESH = SETTINGS.server.refresh_interval
 def main() -> None:
     print(f"Dashboard: http://{HOST}:{PORT}")
     print(f"Monitoring {len(SETTINGS.inference_servers)} inference server(s)")
-    app.run(host=HOST, port=PORT, threaded=True)
+    serve(app, host=HOST, port=PORT, threads=8, channel_timeout=120)
 
 
 if __name__ == "__main__":

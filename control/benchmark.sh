@@ -87,7 +87,7 @@ fi
 if [[ -n "$host" ]]; then
   address_output=''
   ssh_rc=0
-  address_output="$(ssh -o BatchMode=yes -o ConnectTimeout=20 -o ConnectionAttempts=3 "$host" 'exec tailscale ip -4')" || ssh_rc=$?
+  address_output="$(ssh -T -o BatchMode=yes -o StrictHostKeyChecking=yes -o ForwardAgent=no -o ClearAllForwardings=yes -o RequestTTY=no -o ConnectTimeout=20 -o ConnectionAttempts=3 "$host" 'exec tailscale ip -4')" || ssh_rc=$?
   (( ssh_rc == 0 )) || exit "$ssh_rc"
   mapfile -t addresses < <(printf '%s\n' "$address_output" | sed '/^[[:space:]]*$/d')
   (( ${#addresses[@]} == 1 )) || fail "$host must return exactly one Tailscale IPv4"

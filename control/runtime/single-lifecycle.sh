@@ -45,7 +45,13 @@ case "$ACTION" in
       exit 0
     fi
     state="$(inspect_identity identity)" || exit $?
-    printf 'container=%s state=%s\n' "$CONTAINER" "$state"
+    if [[ "$state" == running ]]; then
+      endpoint="$(inspect_identity verify)" || exit $?
+      printf 'container=%s state=running endpoint=%s model=%s\n' \
+        "$CONTAINER" "$endpoint" "$SERVED"
+    else
+      printf 'container=%s state=%s\n' "$CONTAINER" "$state"
+    fi
     ;;
   logs)
     (($# <= 1)) || fail "logs accepts at most one line count"

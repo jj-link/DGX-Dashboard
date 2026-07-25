@@ -32,6 +32,7 @@
   <div class="tab-bar">
     <button class="tab-btn active" data-tab="live">Live Stats</button>
     <button class="tab-btn" data-tab="benchmarks">Benchmarks</button>
+    <button class="tab-btn" data-tab="control">Control</button>
   </div>
 </header>
 
@@ -91,9 +92,174 @@
     <div class="sub-tab-panel" id="subtab-tokencost"><div class="bm-empty">Loading...</div></div>
   </div>
 
+  <!-- CONTROL TAB -->
+  <div class="tab-panel" id="tab-control">
+    <div class="control-banner" id="control-banner">
+      <div>
+        <span class="control-kicker">Unified control plane</span>
+        <h1>Serving &amp; benchmark operations</h1>
+      </div>
+      <div class="control-lock" id="control-lock">
+        <span class="control-lock-dot"></span>
+        <span id="control-lock-text">Checking policy</span>
+      </div>
+    </div>
+
+    <div class="target-strip" id="control-targets">
+      <div class="control-empty">Control status has not been loaded.</div>
+    </div>
+
+    <div class="control-columns">
+      <section class="control-module">
+        <div class="control-module-head">
+          <div>
+            <span class="module-index">01 / SERVE</span>
+            <h2>Model lifecycle</h2>
+          </div>
+          <span class="module-state" id="serve-selection-state">NO TARGET</span>
+        </div>
+        <div class="control-form-grid">
+          <label class="control-field">
+            <span>Target</span>
+            <select id="serve-target"></select>
+          </label>
+          <label class="control-field">
+            <span>Engine</span>
+            <select id="serve-engine"></select>
+          </label>
+          <label class="control-field control-field-wide">
+            <span>Exact recipe</span>
+            <select id="serve-artifact"></select>
+          </label>
+        </div>
+        <div class="recipe-readout" id="serve-recipe-meta">Select an enabled recipe.</div>
+        <div class="control-actions">
+          <button type="button" class="control-button control-button-primary" data-serve-action="start">Start + verify</button>
+          <button type="button" class="control-button" data-serve-action="verify">Verify</button>
+          <button type="button" class="control-button control-button-danger" data-serve-action="stop">Stop</button>
+        </div>
+        <div class="log-controls">
+          <label class="control-field">
+            <span>Tail lines</span>
+            <select id="serve-log-lines">
+              <option value="100">100</option>
+              <option value="250">250</option>
+              <option value="500">500</option>
+              <option value="1000">1000</option>
+            </select>
+          </label>
+          <button type="button" class="control-button" id="serve-load-logs">Load exact-container log</button>
+        </div>
+        <pre class="operation-log" id="serve-log-output">No serving log loaded.</pre>
+      </section>
+
+      <section class="control-module">
+        <div class="control-module-head">
+          <div>
+            <span class="module-index">02 / BENCH</span>
+            <h2>Oneshot evaluation</h2>
+          </div>
+          <span class="module-state">WORKSTATION GRADING</span>
+        </div>
+        <div class="control-form-grid">
+          <label class="control-field">
+            <span>Serving target</span>
+            <select id="bench-target"></select>
+          </label>
+          <label class="control-field">
+            <span>Language</span>
+            <select id="bench-lang">
+              <option value="">All six languages</option>
+              <option value="cpp">C++</option>
+              <option value="go">Go</option>
+              <option value="java">Java</option>
+              <option value="javascript">JavaScript</option>
+              <option value="python">Python</option>
+              <option value="rust">Rust</option>
+            </select>
+          </label>
+          <label class="control-field">
+            <span>Problems</span>
+            <input id="bench-num-tests" type="number" min="-1" max="100000" value="-1">
+          </label>
+          <label class="control-field">
+            <span>Concurrency</span>
+            <input id="bench-concurrency" type="number" min="1" max="64" value="1">
+          </label>
+          <label class="control-field">
+            <span>Max tokens</span>
+            <input id="bench-max-tokens" type="number" min="1" max="1048576" value="32768">
+          </label>
+          <label class="control-field">
+            <span>Temperature</span>
+            <input id="bench-temperature" type="number" min="0" max="2" step="0.1" value="1.0">
+          </label>
+          <label class="control-field">
+            <span>Request timeout</span>
+            <input id="bench-timeout" type="number" min="1" max="86400" value="600">
+          </label>
+          <label class="control-field">
+            <span>Test timeout</span>
+            <input id="bench-test-timeout" type="number" min="1" max="86400" value="300">
+          </label>
+          <label class="control-field">
+            <span>Reasoning</span>
+            <select id="bench-reasoning">
+              <option value="disabled">Disabled</option>
+              <option value="enabled">Enabled</option>
+            </select>
+          </label>
+          <label class="control-field">
+            <span>Reasoning effort</span>
+            <select id="bench-reasoning-effort">
+              <option value="">Harness default</option>
+              <option value="low">Low</option>
+              <option value="medium">Medium</option>
+              <option value="high">High</option>
+            </select>
+          </label>
+          <label class="control-field control-field-wide">
+            <span>Keyword filters <em>comma separated, optional</em></span>
+            <input id="bench-keywords" type="text" maxlength="512" placeholder="arrays, parsing">
+          </label>
+        </div>
+        <div class="benchmark-note">
+          The selected model must already be healthy. Benchmarking never starts or replaces serving.
+        </div>
+        <button type="button" class="control-button control-button-primary control-button-run" id="bench-run">
+          Reserve worker + run oneshot
+        </button>
+      </section>
+    </div>
+
+    <section class="control-module run-module">
+      <div class="control-module-head">
+        <div>
+          <span class="module-index">03 / RUNS</span>
+          <h2>Durable operation ledger</h2>
+        </div>
+        <span class="module-state" id="run-poll-state">IDLE</span>
+      </div>
+      <div id="run-history" class="run-history">
+        <div class="control-empty">No runs loaded.</div>
+      </div>
+      <div class="run-log-drawer" id="run-log-drawer" hidden>
+        <div class="run-log-head">
+          <div>
+            <span class="module-index">BYTE-CURSOR LOG</span>
+            <strong id="run-log-title">Run output</strong>
+          </div>
+          <button type="button" class="control-button" id="run-log-close">Close</button>
+        </div>
+        <pre class="operation-log" id="run-log-output"></pre>
+      </div>
+    </section>
+  </div>
+
 </div>
 
 <script src="{{ url_for('static', filename='live.js') }}"></script>
 <script src="{{ url_for('static', filename='benchmarks.js') }}"></script>
+<script src="{{ url_for('static', filename='control.js') }}"></script>
 </body>
 </html>

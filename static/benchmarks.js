@@ -14,7 +14,8 @@ document.querySelectorAll('.tab-btn').forEach(btn => {
     } else {
       clearInterval(pollTimer);
       pollTimer = null;
-      if (!benchmarksData) fetchBenchmarks();
+      if (tabId === 'benchmarks' && !benchmarksData) fetchBenchmarks();
+      if (tabId === 'control') document.dispatchEvent(new CustomEvent('dashboard:control-active'));
     }
   });
 });

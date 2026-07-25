@@ -27,15 +27,26 @@ def test_root_uses_external_assets(client):
     assert b'/static/dashboard.css' in response.data
     assert b'/static/live.js' in response.data
     assert b'/static/benchmarks.js' in response.data
+    assert b'/static/control.js' in response.data
+    assert b'data-tab="control"' in response.data
     assert b'data-refresh-interval="3"' in response.data
 
 
 def test_static_assets_are_served(client):
-    for path in ("dashboard.css", "live.js", "benchmarks.js"):
+    for path in ("dashboard.css", "live.js", "benchmarks.js", "control.js"):
         response = client.get(f"/static/{path}")
         assert response.status_code == 200
         assert response.data
 
+
+
+def test_disabled_control_routes_fail_closed(client):
+    catalog = client.get("/api/control/catalog")
+    assert catalog.status_code == 200
+    assert catalog.get_json() == {"enabled": False, "targets": [], "recipes": []}
+    response = client.post("/api/runs", json={})
+    assert response.status_code == 403
+    assert response.get_json()["code"] == "controls_disabled"
 
 def test_api_stats_preserves_wire_schema(client, stats_payload):
     response = client.get("/api/stats")

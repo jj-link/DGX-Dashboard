@@ -96,7 +96,7 @@ run_remote() {
   for argument in "${command[@]}"; do
     printf -v quoted '%s %q' "$quoted" "$argument"
   done
-  ssh -o BatchMode=yes -o ConnectTimeout=20 -o ConnectionAttempts=3 "$host" "exec$quoted"
+  ssh -T -o BatchMode=yes -o StrictHostKeyChecking=yes -o ForwardAgent=no -o ClearAllForwardings=yes -o RequestTTY=no -o ConnectTimeout=20 -o ConnectionAttempts=3 "$host" "exec$quoted"
 }
 
 API_HOST=''
