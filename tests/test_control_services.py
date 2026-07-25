@@ -153,6 +153,8 @@ def test_typed_requests_build_fixed_argv_and_allowlisted_environment(settings, t
     assert "DASHBOARD_AUTH_PASSWORD" not in plan.command.environment
     assert "SSH_AUTH_SOCK" not in plan.command.environment
     assert plan.verify is not None and plan.verify.argv[-1] == "verify"
+    assert plan.command.timeout == control_settings.serving_timeout
+    assert plan.verify.timeout == control_settings.serving_timeout
     assert [command.argv[-1] for command in plan.cleanup] == ["stop", "status"]
 
     benchmark = validate_operation(

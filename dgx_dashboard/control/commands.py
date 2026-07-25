@@ -99,7 +99,7 @@ class CommandBuilder:
             argv=tuple(argv),
             cwd=self.root,
             environment=MappingProxyType(environment),
-            timeout=self.control.serving_timeout if action == "start" else 300,
+            timeout=self.control.serving_timeout if action in {"start", "verify"} else 300,
         )
 
     def benchmark(self, target: str, options: Mapping[str, object], run_id: str) -> CommandSpec:
