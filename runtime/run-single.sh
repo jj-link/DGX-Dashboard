@@ -203,7 +203,7 @@ container_args+=(
   --read-only
   --pids-limit 4096
   --ulimit memlock=-1
-  --tmpfs /tmp:rw,nosuid,nodev,size=16g
+  --tmpfs /tmp:rw,exec,nosuid,nodev,size=16g
   --mount "type=volume,src=${META[CONTAINER_NAME]}-cache,dst=/root/.cache"
   --env HOME=/root/.cache
   --publish "$BIND_ADDRESS:$HOST_PORT:8000/tcp"

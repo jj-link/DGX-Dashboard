@@ -22,7 +22,7 @@
     "--ulimit",
     "memlock=-1",
     "--tmpfs",
-    "/tmp:rw,nosuid,nodev,size=16g",
+    "/tmp:rw,exec,nosuid,nodev,size=16g",
     "--mount",
     "type=volume,src=inference-vllm-spark-saricles_minimax_m2_7_reap_172b_a10b_nvfp4_gb10-cache,dst=/root/.cache",
     "--env",

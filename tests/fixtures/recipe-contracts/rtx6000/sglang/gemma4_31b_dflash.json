@@ -22,7 +22,7 @@
     "--ulimit",
     "memlock=-1",
     "--tmpfs",
-    "/tmp:rw,nosuid,nodev,size=16g",
+    "/tmp:rw,exec,nosuid,nodev,size=16g",
     "--mount",
     "type=volume,src=inference-sglang-rtx6000-gemma4_31b_dflash-cache,dst=/root/.cache",
     "--env",

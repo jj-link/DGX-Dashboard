@@ -22,7 +22,7 @@
     "--ulimit",
     "memlock=-1",
     "--tmpfs",
-    "/tmp:rw,nosuid,nodev,size=16g",
+    "/tmp:rw,exec,nosuid,nodev,size=16g",
     "--mount",
     "type=volume,src=inference-vllm-spark-axionml_qwen35_9b_nvfp4-cache,dst=/root/.cache",
     "--env",

@@ -304,7 +304,7 @@ start_node() {
     --security-opt no-new-privileges:true \
     --read-only \
     --pids-limit 4096 \
-    --tmpfs /tmp:rw,nosuid,nodev,size=16g \
+    --tmpfs /tmp:rw,exec,nosuid,nodev,size=16g \
     --tmpfs /run:rw,nosuid,nodev,size=64m \
     "${mounts[@]}" \
     "${environment[@]}" \
