@@ -10,3 +10,6 @@
 !patches/vllm-0.24-align-upstream/**
 !patches/vllm-0.24-dflash-depth-matrix/
 !patches/vllm-0.24-dflash-depth-matrix/**
+
+!moe_configs/
+!moe_configs/E=256,N=512,device_name=NVIDIA_RTX_PRO_6000_Blackwell_Workstation_Edition,dtype=fp8_w8a8,block_shape=[128,128].json
