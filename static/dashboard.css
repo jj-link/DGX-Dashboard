@@ -281,7 +281,7 @@
   /* ── Server Grid ────────────────────────────────────────── */
   .server-grid {
     display: grid;
-    grid-template-columns: repeat(auto-fit, minmax(350px, 1fr));
+    grid-template-columns: minmax(0, 1fr);
     gap: 16px;
   }
 
@@ -293,6 +293,8 @@
     transition: border-color 0.3s;
     display: flex;
     flex-direction: column;
+    min-width: 0;
+    overflow: hidden;
   }
 
   .server-card:hover { border-color: var(--purple); }
@@ -328,7 +330,7 @@
     padding: 8px 12px;
     background: var(--surface2);
     border-radius: 6px;
-    word-break: break-all;
+    overflow-wrap: anywhere;
   }
 
   .server-stats {
