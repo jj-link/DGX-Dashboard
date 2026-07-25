@@ -4,11 +4,15 @@ COPY patches/vllm-0.24-dflash-depth-matrix/vllm /usr/local/lib/python3.12/dist-p
 COPY patches/vllm-0.24-align-upstream/vllm/v1/worker/mamba_utils.py /usr/local/lib/python3.12/dist-packages/vllm/v1/worker/mamba_utils.py
 COPY patches/vllm-0.24-align-upstream/vllm/v1/worker/gpu/model_states/mamba_hybrid.py /usr/local/lib/python3.12/dist-packages/vllm/v1/worker/gpu/model_states/mamba_hybrid.py
 COPY patches/vllm-0.24-align-upstream/vllm/model_executor/layers/mamba/gdn/qwen_gdn_linear_attn.py /usr/local/lib/python3.12/dist-packages/vllm/model_executor/layers/mamba/gdn/qwen_gdn_linear_attn.py
+COPY patches/vllm-0.24-align-upstream/vllm/forward_context.py /usr/local/lib/python3.12/dist-packages/vllm/forward_context.py
 COPY patches/vllm-0.24-align-upstream/vllm/config/compilation.py /usr/local/lib/python3.12/dist-packages/vllm/config/compilation.py
 COPY patches/vllm-0.24-align-upstream/vllm/model_executor/models/qwen3_next.py /usr/local/lib/python3.12/dist-packages/vllm/model_executor/models/qwen3_next.py
 COPY patches/vllm-0.24-align-upstream/vllm/model_executor/models/qwen3_5.py /usr/local/lib/python3.12/dist-packages/vllm/model_executor/models/qwen3_5.py
 COPY patches/vllm-0.24-align-upstream/vllm/v1/core/sched/scheduler.py /usr/local/lib/python3.12/dist-packages/vllm/v1/core/sched/scheduler.py
 COPY patches/vllm-0.24-align-upstream/vllm/v1/attention/backends/gdn_attn.py /usr/local/lib/python3.12/dist-packages/vllm/v1/attention/backends/gdn_attn.py
+COPY patches/vllm-0.24-align-upstream/vllm/platforms/interface.py /usr/local/lib/python3.12/dist-packages/vllm/platforms/interface.py
+COPY patches/vllm-0.24-align-upstream/vllm/v1/core/kv_cache_utils.py /usr/local/lib/python3.12/dist-packages/vllm/v1/core/kv_cache_utils.py
+COPY moe_configs/E=256,N=512,device_name=NVIDIA_RTX_PRO_6000_Blackwell_Workstation_Edition,dtype=fp8_w8a8,block_shape=[128,128].json /usr/local/lib/python3.12/dist-packages/vllm/model_executor/layers/fused_moe/configs/E=256,N=512,device_name=NVIDIA_RTX_PRO_6000_Blackwell_Workstation_Edition,dtype=fp8_w8a8,block_shape=[128,128].json
 COPY patches/qwen3-dflash-v1-mixed.py /usr/local/lib/python3.12/dist-packages/vllm/model_executor/models/qwen3_dflash.py
 COPY patches/vllm-0.24-align-upstream/vllm/v1/spec_decode/dflash.py /usr/local/lib/python3.12/dist-packages/vllm/v1/spec_decode/dflash.py
 COPY patches/vllm-0.24-align-upstream/vllm/v1/cudagraph_dispatcher.py /usr/local/lib/python3.12/dist-packages/vllm/v1/cudagraph_dispatcher.py
