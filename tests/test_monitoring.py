@@ -3,11 +3,12 @@
 from __future__ import annotations
 
 from pathlib import Path
+import subprocess
 
 import requests
 
 from dgx_dashboard.config import InferenceServerSettings
-from dgx_dashboard.monitoring.gpu import parse_gpu_csv
+from dgx_dashboard.monitoring.gpu import GpuAdapters, GpuMonitor, parse_gpu_csv
 from dgx_dashboard.monitoring.inference import (
     InferenceAdapters,
     InferenceMonitor,
@@ -31,6 +32,28 @@ def test_gpu_csv_preserves_literal_headers_and_types():
         }
     ]
 
+
+
+def test_gpu_monitor_keeps_local_data_when_a_remote_times_out():
+    calls = []
+    payload = "index, name, memory.used [MiB]\n0, Test GPU, 1234 MiB\n"
+
+    def run(argv, **kwargs):
+        calls.append((argv, kwargs["timeout"]))
+        if argv[0] == "ssh" and argv[1] == "spark2-ts":
+            raise subprocess.TimeoutExpired(argv, kwargs["timeout"])
+        return subprocess.CompletedProcess(argv, 0, stdout=payload, stderr="")
+
+    monitor = GpuMonitor(
+        {"spark1": "spark1-ts", "spark2": "spark2-ts"},
+        GpuAdapters(run=run),
+    )
+    result = monitor.collect()
+
+    assert sorted(gpu["host"] for gpu in result) == ["local", "spark1"]
+    assert len(calls) == 3
+    assert all("--format=csv" in call[-1] for call, _timeout in calls)
+    assert max(timeout for _call, timeout in calls) <= 10
 
 def test_prometheus_parser_preserves_metric_names():
     metrics = parse_prometheus(

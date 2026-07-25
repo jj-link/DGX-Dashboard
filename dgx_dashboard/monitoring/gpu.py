@@ -97,28 +97,19 @@ class GpuMonitor:
     ) -> str | None:
         output_format = "csv" if header else "csv,noheader"
         command = f"nvidia-smi --query-gpu={query_fields} --format={output_format}"
-        return self._query(["ssh", host, command], 15)
+        return self._query(["ssh", host, command], 8)
 
     def _collect_remote(self, name: str, host: str) -> list[dict[str, object]]:
-        raw = self._remote(host, GPU_QUERY_FIELDS)
-        header = self._remote(host, GPU_QUERY_FIELDS, header=True)
-        if not raw or not header:
+        raw = self._remote(host, GPU_QUERY_FIELDS, header=True)
+        if not raw:
             return []
-        return parse_gpu_csv(raw, header, name)
+        return parse_gpu_csv(raw, raw, name)
 
     def collect(self) -> list[dict[str, object]]:
         gpus: list[dict[str, object]] = []
-        count = self._local("count")
-        if count:
-            try:
-                int(count.splitlines()[0])
-            except (IndexError, ValueError):
-                pass
-            else:
-                raw = self._local(GPU_QUERY_FIELDS)
-                header = self._local(GPU_QUERY_FIELDS, header=True)
-                if raw and header:
-                    gpus.extend(parse_gpu_csv(raw, header, "local"))
+        raw = self._local(GPU_QUERY_FIELDS, header=True)
+        if raw:
+            gpus.extend(parse_gpu_csv(raw, raw, "local"))
 
         if not self._remote_hosts:
             return gpus
