@@ -1,93 +1,210 @@
-# DGX Spark Dashboard
+# DGX Dashboard Unified Control Plane
 
-Live monitoring dashboard for DGX Spark (GB10) — GPU hardware stats + inference server metrics.
+One workstation-hosted dashboard for GPU monitoring, model lifecycle operations, and oneshot benchmark runs across:
 
-## Features
+- `local` — RTX PRO 6000 Blackwell workstation
+- `spark1`, `spark2`, `spark3` — individual DGX Spark nodes
+- `cluster` — the Spark 2 + Spark 3 two-node target
 
-- **GPU stats**: utilization gauge, memory usage, temperature, power draw, clock speeds
-- **Inference servers**: supports SGLang, vLLM, llama.cpp — shows throughput, latency, queue depth, KV cache, model info
-- **System**: CPU load, RAM usage, uptime
-- **Auto-refresh**: configurable poll interval (default 3s)
-- **Dark theme**: terminal-friendly, no external dependencies
-- **Benchmarks dashboard**: 5 view modes for benchmark result analysis (see below)
+The dashboard keeps source and control logic in this repository. Model weights, Hugging Face caches, Docker images and volumes, run state, logs, benchmark corpora, and raw results remain external runtime data.
 
-## Quick start
+## Runtime layout
 
-```bash
-cd dgx-dashboard
-pip install -r requirements.txt
+| Purpose | Path |
+|---|---|
+| Canonical checkout | `/home/workbench/Projects/personal/dgx-dashboard` |
+| Production config | `/var/lib/dgx-dashboard/config-production.ini` |
+| Auth environment | `/var/lib/dgx-dashboard/dashboard.env` (`0600`) |
+| Durable runs and logs | `/var/lib/dgx-dashboard/runs` |
+| Oneshot results | `/var/lib/dgx-dashboard/benchmark-results` |
+| Aider results | `/var/lib/dgx-dashboard/aider-benchmarks` |
+| Polyglot corpus | `/var/lib/dgx-dashboard/polyglot-benchmark` |
+| Result index | `/var/lib/dgx-dashboard/result-index.json` |
 
-# Edit config.ini — add your inference servers
-nano config.ini
+`config.ini` is the safe, tracked example and keeps `[control] enabled = false`. Enable controls only in an external production config after all preflights pass.
 
-# Run
-python server.py
-```
+## Requirements
 
-Open `http://<spark-ip>:9000` in your browser.
+- Python 3.10 or newer
+- Docker access for the dashboard service user
+- NVIDIA userspace tools on the workstation
+- Passwordless, host-key-pinned SSH aliases `spark1-ts`, `spark2-ts`, and `spark3-ts`
+- Tailscale connectivity between the workstation and Spark nodes
+- Existing model/cache roots referenced by recipe `runtime.env` files
 
-## Config
-
-Edit `config.ini`:
-
-```ini
-[server]
-host = 0.0.0.0
-port = 9000
-refresh_interval = 3
-auth_user = admin          # optional
-auth_password = changeme   # optional
-
-[inference_servers]
-sglang-main = sglang,http://localhost:8000
-sglang-draft = sglang,http://localhost:8001
-vllm = vllm,http://localhost:8080
-local = llamacpp,http://localhost:8080
-```
-
-Server types: `sglang`, `vllm`, `llamacpp`
-
-### Benchmarks
-
-Add a `[benchmarks]` section to `config.ini` with paths to your benchmark result directories:
-
-```ini
-[benchmarks]
-results_dir = /path/to/benchmark/results
-aider_benchmarks_dir = /path/to/benchmark/aider/tmp.benchmarks
-```
-
-**Oneshot data** (`results_dir`):
-- `cross-agent-oneshot-*.json` — cross-agent runs with opencode results per model/language
-- `*-oneshot-*.json` — per-model runs for quantization/token cost views
-
-**Multi-turn data** (`aider_benchmarks_dir`):
-- `*-aiderdkr-*/` sweep directories with `_stats.yml` and `.aider.results.json` files
-
-Benchmarks data is cached for 5 minutes. The "Benchmarks" tab stops live polling automatically.
-
-**5 sub-views:**
-1. **Oneshot** — opencode pass rate per model and language from cross-agent runs
-2. **Multi-turn** — aider sweep pass@1/pass@2 with per-language breakdowns
-3. **Language Heatmap** — color-coded pass rates across models and languages
-4. **Quantization Impact** — per-model pass rates to compare quantization levels
-5. **Token Cost** — prompt/completion token averages and totals per model
-
-## Running as a service
-
-Copy `dashboard.service` to `/etc/systemd/system/`, adjust paths, then:
+Install Python dependencies:
 
 ```bash
-systemctl daemon-reload
-systemctl enable --now dashboard
+cd /home/workbench/Projects/personal/dgx-dashboard
+python3 -m venv venv
+venv/bin/pip install -r requirements.txt
 ```
 
-## Endpoints queried
+## Configuration and authentication
 
-| Server   | Endpoints                                              |
-|-----------|--------------------------------------------------------|
-| SGLang    | `/v1/models`, `/health`, `/get_server_info`, `/metrics` |
-| vLLM      | `/v1/models`, `/stats`, `/metrics`                     |
-| llama.cpp | `/v1/models`, `/info`, `/stats`                        |
+Create a production config outside Git, using `config.ini` as the schema. Set the canonical wrapper and state roots, the exact allowed browser origin, all enabled targets, and then enable controls:
 
-GPU stats come from `nvidia-smi --query-gpu`.
+```ini
+[control]
+enabled = true
+allowed_origin = http://100.74.194.53:9000
+wrapper_root = /home/workbench/Projects/personal/dgx-dashboard
+state_dir = /var/lib/dgx-dashboard/runs
+polyglot_root = /var/lib/dgx-dashboard/polyglot-benchmark
+targets = local,spark1,spark2,spark3,cluster
+retention = 250
+serving_timeout = 1800
+benchmark_timeout = 86400
+```
+
+Store Basic-auth credentials only in the service environment file:
+
+```bash
+install -m 0600 /dev/null /var/lib/dgx-dashboard/dashboard.env
+# Add DASHBOARD_AUTH_USER and DASHBOARD_AUTH_PASSWORD without committing them.
+```
+
+A control-enabled startup fails closed if auth, origin, Docker, GPU, SSH, Git cleanliness, state roots, result roots, corpus, or recipe validation fails. Mutation requests additionally require Basic auth, `Content-Type: application/json`, the configured same-origin `Origin`, and a body no larger than 16 KiB. No permissive CORS headers are emitted.
+
+Docker-group membership is effectively host-root capability. Keep the dashboard bound to a private Tailscale address or place it behind an authenticated TLS reverse proxy.
+
+## System service
+
+`dashboard.service` is the canonical system unit. It runs as `workbench`, uses the external production config and auth environment, keeps the full process group under systemd, and restricts writes to `/var/lib/dgx-dashboard`.
+
+```bash
+sudo install -m 0644 dashboard.service /etc/systemd/system/dashboard.service
+sudo systemctl daemon-reload
+sudo systemctl enable --now dashboard.service
+sudo systemctl status dashboard.service --no-pager
+```
+
+Smoke checks:
+
+```bash
+curl -u "$DASHBOARD_AUTH_USER:$DASHBOARD_AUTH_PASSWORD" \
+  http://100.74.194.53:9000/api/control/catalog
+curl -u "$DASHBOARD_AUTH_USER:$DASHBOARD_AUTH_PASSWORD" \
+  http://100.74.194.53:9000/api/stats
+```
+
+Open `http://100.74.194.53:9000` and authenticate. The **Live** tab monitors GPUs and inference endpoints, **Benchmarks** browses indexed results, and **Control** exposes typed operations, bounded logs, history, cancellation, and result links.
+
+## Model lifecycle CLI
+
+List the validated catalog:
+
+```bash
+./serve.sh --help
+```
+
+Start a recipe. Extra tokens after the artifact are passed only to the selected engine launcher:
+
+```bash
+./serve.sh <local|spark1|spark2|spark3> <vllm|sglang> <artifact> [engine args...]
+./serve.sh cluster <vllm|sglang> <artifact> [engine args...]
+```
+
+Read or mutate an exact recipe-owned service:
+
+```bash
+./serve.sh <target> <engine> <artifact> status
+./serve.sh <target> <engine> <artifact> logs [1-1000]
+./serve.sh <target> <engine> <artifact> verify
+./serve.sh <target> <engine> <artifact> stop
+```
+
+Single-device services bind the workstation model to loopback and Spark models to each node's Tailscale address. The two-node cluster binds its head API to Spark 2's Tailscale address on port `8888`; Spark 3 remains headless. Cluster lifecycle actions operate on both exact rank containers and verify two-way tensor parallelism plus RoCE/NCCL topology.
+
+Starts never replace an occupied target implicitly. Stop the current exact recipe first. Container, image, network, port, model, and recipe identity checks fail closed rather than touching an unknown service.
+
+## Oneshot benchmark CLI
+
+Benchmarks always run on the workstation against the model already serving on the selected target:
+
+```bash
+./benchmark.sh <local|spark1|spark2|spark3|cluster> oneshot [options]
+```
+
+The CLI discovers the served model from `/v1/models`; there is no separate alias argument. Omitting `--lang` runs `cpp`, `go`, `java`, `javascript`, `python`, and `rust`. Common options include:
+
+```text
+--lang {cpp,go,java,javascript,python,rust}
+--num-tests N
+--keywords NAME,...
+--max-tokens N
+--temperature FLOAT
+--timeout SEC
+--test-timeout SEC
+--concurrency N
+--reasoning VALUE
+--reasoning-effort {low,medium,high}
+--engine-version VALUE
+--runtime-image VALUE
+--runtime-image-digest VALUE
+--model-source VALUE
+--model-revision VALUE
+```
+
+Each result records target and run metadata and uses a collision-resistant filename. Grading containers carry exact `io.dgx-dashboard.kind=benchmark` and `io.dgx-dashboard.run-id=<uuid>` labels. Only those labels are used for cancellation, timeout, and restart cleanup.
+
+## HTTP control API
+
+Read routes:
+
+- `GET /`
+- `GET /api/stats`
+- `GET /api/benchmarks`
+- `GET /api/serving`
+- `GET /api/control/catalog`
+- `GET /api/runs?limit=N`
+- `GET /api/runs/<uuid>`
+- `GET /api/runs/<uuid>/log?offset=N&limit=N`
+- `GET /api/benchmarks/results/<relative-path>`
+
+Mutation routes:
+
+- `POST /api/runs` — typed serving or benchmark request
+- `POST /api/runs/<uuid>/cancel`
+
+Run metadata never exposes credentials, PIDs, argv, or environments. Logs use capped byte-cursor reads. Metadata is persisted atomically; on restart, nonterminal runs become `interrupted`, exact labeled benchmark containers are removed, and unrelated containers are left untouched.
+
+Resource leases prevent overlapping mutations on the same target. `cluster` conflicts with individual `spark2` and `spark3` mutations. Only one benchmark worker may run at a time.
+
+## Repository synchronization
+
+The workstation is the source controller. Synchronize clean, published commits to Spark checkouts:
+
+```bash
+./sync.sh spark1-ts
+./sync.sh spark2-ts
+./sync.sh spark3-ts
+./sync.sh all
+```
+
+Synchronization rejects dirty, detached, divergent, or unpublished states. It never pulls model weights, results, caches, or run state into Git.
+
+## Verification
+
+Run both suites from the canonical checkout:
+
+```bash
+venv/bin/python -m pytest -q
+./control/tests/run.sh
+```
+
+Useful focused smoke checks:
+
+```bash
+./serve.sh <target> <engine> <artifact> status
+./serve.sh <target> <engine> <artifact> verify
+curl --fail http://<target-endpoint>/v1/models
+```
+
+For a serving cutover, capture a deterministic chat response before stop, start the same recipe from this repository, repeat the same request, and compare model, content, and finish reason.
+
+## Rollback and archive policy
+
+The retired `inference` checkout is an archive only, not an active caller. Its Git history remains reachable from this repository through the imported source-history merge. Runtime results and corpus data stay under `/var/lib/dgx-dashboard`; archive symlinks expose those same trees to old read-only tools without copying them.
+
+Do not delete the archive checkout, Spark 1 legacy-dashboard backup, migration manifests, or rollback links until lifecycle checks, result manifests, repository audits, and operator approval all pass.
