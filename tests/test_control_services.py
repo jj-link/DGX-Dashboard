@@ -149,6 +149,7 @@ def test_typed_requests_build_fixed_argv_and_allowlisted_environment(settings, t
     assert {key: plan.command.environment[key] for key in ("DETACH", "KEEP", "RESTART_POLICY")} == {
         "DETACH": "1", "KEEP": "1", "RESTART_POLICY": "unless-stopped"
     }
+    assert "/usr/lib/wsl/lib" in plan.command.environment["PATH"].split(":")
     assert "DASHBOARD_AUTH_PASSWORD" not in plan.command.environment
     assert "SSH_AUTH_SOCK" not in plan.command.environment
     assert plan.verify is not None and plan.verify.argv[-1] == "verify"

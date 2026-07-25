@@ -43,7 +43,7 @@ class CommandBuilder:
         self.root = control.wrapper_root
         self._base_environment = MappingProxyType(
             {
-                "PATH": "/home/workbench/.local/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
+                "PATH": "/home/workbench/.local/bin:/usr/lib/wsl/lib:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
                 "HOME": f"/home/{service_user}",
                 "USER": service_user,
                 "LOGNAME": service_user,
