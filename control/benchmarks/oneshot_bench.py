@@ -13,24 +13,29 @@ For each polyglot exercise in the chosen language:
 
 Output:
   - per-problem .oneshot.results.json next to each exercise
-  - a summary JSON at results/<alias>-<lang>-oneshot-<ts>.json
+  - a summary JSON at results/<alias>-<target>-<run-id>-<lang>-oneshot-<ts>.json
 
 Usage:
   python oneshot_bench.py <alias> --lang rust [--num-tests N]
                           [--keywords W,...] [--timeout SEC] [--concurrency K]
 """
-import argparse, hashlib, json, os, platform, re, shlex, shutil, subprocess, sys, tempfile, threading, time
+import argparse, hashlib, json, os, platform, re, shlex, shutil, subprocess, sys, tempfile, threading, time, uuid
 import urllib.request, urllib.error
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 
 BASE_URL = os.environ.get("OPENAI_API_BASE", "http://gx10-a6c7.lan:8000/v1")
 API_KEY = os.environ.get("OPENAI_API_KEY", "dummy")
+BENCHMARK_TARGET = "direct"
+BENCHMARK_RUN_ID = str(uuid.uuid4())
 
 SCRIPT_DIR = Path(__file__).resolve().parent
 POLYGLOT = Path(os.environ.get(
     "POLYGLOT_ROOT",
     str(SCRIPT_DIR / "aider" / "tmp.benchmarks" / "polyglot-benchmark"),
+))
+RESULTS_DIR = Path(os.environ.get(
+    "BENCHMARK_RESULTS_ROOT", "/var/lib/dgx-dashboard/benchmark-results"
 ))
 
 # Per-language config. `test_cmd(sol, test)` returns the shell command run
@@ -287,6 +292,8 @@ def run_in_docker(prob: dict, lang: str, timeout: int, solutions: dict):
             (staged / rel).write_text(src)
         cmd = [
             "docker", "run", "--rm", "--name", cname,
+            "--label", f"io.dgx-dashboard.kind=benchmark",
+            "--label", f"io.dgx-dashboard.run-id={BENCHMARK_RUN_ID}",
             "-v", f"{staged}:/src:ro",
             # `bash -c`, NOT `-lc`: a login shell re-sources /etc/profile and
             # can reset PATH, dropping toolchain directories.
@@ -313,8 +320,24 @@ def result_alias(alias: str | None, served: str) -> str:
     safe = re.sub(r"[^A-Za-z0-9_.-]+", "-", served).strip("._-")
     return safe or "model"
 
+def benchmark_identity(environment: dict[str, str] | None = None) -> tuple[str, str]:
+    """Return a validated target and collision-free run identifier."""
+    values = os.environ if environment is None else environment
+    target = values.get("DGX_DASHBOARD_BENCHMARK_TARGET", "direct")
+    if target not in {"direct", "local", "spark1", "spark2", "spark3", "cluster"}:
+        raise ValueError(f"invalid benchmark target {target!r}")
+    run_id = values.get("DGX_DASHBOARD_RUN_ID") or str(uuid.uuid4())
+    try:
+        parsed = uuid.UUID(run_id)
+    except (ValueError, AttributeError) as error:
+        raise ValueError("DGX_DASHBOARD_RUN_ID must be a lowercase UUID") from error
+    if str(parsed) != run_id:
+        raise ValueError("DGX_DASHBOARD_RUN_ID must be a lowercase UUID")
+    return target, run_id
+
 
 def main():
+    global BENCHMARK_TARGET, BENCHMARK_RUN_ID
     ap = argparse.ArgumentParser()
     ap.add_argument("alias", nargs="?")
     ap.add_argument("--lang", default=None, choices=sorted(LANGS),
@@ -337,7 +360,7 @@ def main():
     ap.add_argument("--concurrency", type=int, default=1,
                     help="Problems in parallel (1=serial). vLLM batches the "
                          "model calls; Docker isolates the test runs.")
-    ap.add_argument("--out-dir", default=str(SCRIPT_DIR / "results"))
+    ap.add_argument("--out-dir", default=str(RESULTS_DIR))
     ap.add_argument("--backend", default=None,
                     help="Serving backend: vllm, sglang, llama.cpp, etc.")
     ap.add_argument("--quant", default=None,
@@ -367,11 +390,12 @@ def main():
     ap.add_argument("--model-revision", default=None,
                     help="Immutable model revision or weight identifier")
     args = ap.parse_args()
-
-    # Docker preflight — fail loud, not mid-run.
-    if subprocess.run(["docker", "info"], capture_output=True).returncode != 0:
-        print("[fatal] docker not available (docker info failed)", file=sys.stderr)
-        sys.exit(2)
+    try:
+        args.target, args.run_id = benchmark_identity()
+    except ValueError as error:
+        ap.error(str(error))
+    BENCHMARK_TARGET = args.target
+    BENCHMARK_RUN_ID = args.run_id
 
     try:
         with urllib.request.urlopen(f"{BASE_URL}/models", timeout=5) as r:
@@ -381,6 +405,11 @@ def main():
             args.alias = result_alias(args.alias, served)
     except Exception as e:
         print(f"[health] FAIL: {e}", file=sys.stderr)
+        sys.exit(2)
+
+    # Docker preflight — after endpoint health, before any grading container.
+    if subprocess.run(["docker", "info"], capture_output=True).returncode != 0:
+        print("[fatal] docker not available (docker info failed)", file=sys.stderr)
         sys.exit(2)
 
     langs_to_run = [args.lang] if args.lang else sorted(LANGS)
@@ -465,12 +494,17 @@ def run_one_language(lang, args, served):
     out_dir = Path(args.out_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
     ts = time.strftime("%Y%m%d-%H%M%S")
-    summary_path = out_dir / f"{args.alias}-{lang}-oneshot-{ts}.json"
+    summary_path = out_dir / (
+        f"{args.alias}-{args.target}-{args.run_id}-{lang}-oneshot-{ts}.json"
+    )
     gpu = detect_gpu()
-    summary = {"alias": args.alias, "lang": lang, "served": served,
-               "started": ts, "gpu": gpu, "results": []}
+    summary = {"alias": args.alias, "target": args.target, "run_id": args.run_id,
+               "lang": lang, "served": served, "started": ts, "gpu": gpu,
+               "results": []}
     # Record serving metadata for reproducibility
     meta = {
+        "target": args.target,
+        "run_id": args.run_id,
         "backend": args.backend,
         "quant": args.quant,
         "kv_cache_type": args.kv_cache_type,

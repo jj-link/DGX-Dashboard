@@ -27,7 +27,7 @@ oneshot args:
   --timeout SEC                 default: 600
   --test-timeout SEC            default: 300
   --concurrency N               default: 1
-  --out-dir PATH                default: benchmarks/results
+  --out-dir PATH                default: /var/lib/dgx-dashboard/benchmark-results
   --backend VALUE               --quant VALUE
   --kv-cache-type VALUE         --spec-decode VALUE
   --hardware VALUE              --context-length N
@@ -77,6 +77,13 @@ case "$target" in
   *) usage >&2; exit 2 ;;
 esac
 
+run_id="${DGX_DASHBOARD_RUN_ID:-}"
+if [[ -z "$run_id" ]]; then
+  run_id="$(python3 -c 'import uuid; print(uuid.uuid4())')"
+fi
+[[ "$run_id" =~ ^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$ ]] ||
+  fail "DGX_DASHBOARD_RUN_ID must be a lowercase UUID"
+
 if [[ -n "$host" ]]; then
   address_output=''
   ssh_rc=0
@@ -89,11 +96,13 @@ if [[ -n "$host" ]]; then
 fi
 
 if [[ -n "$host" ]]; then
-  printf 'target=%s host=%s benchmark=oneshot endpoint=%s\n' "$target" "$host" "$endpoint" >&2
+  printf 'target=%s host=%s benchmark=oneshot endpoint=%s run_id=%s\n' "$target" "$host" "$endpoint" "$run_id" >&2
 else
-  printf 'target=%s benchmark=oneshot endpoint=%s\n' "$target" "$endpoint" >&2
+  printf 'target=%s benchmark=oneshot endpoint=%s run_id=%s\n' "$target" "$endpoint" "$run_id" >&2
 fi
 
 export OPENAI_API_BASE="$endpoint"
 export OPENAI_API_KEY=dummy
+export DGX_DASHBOARD_BENCHMARK_TARGET="$target"
+export DGX_DASHBOARD_RUN_ID="$run_id"
 exec python3 "$CONTROL_ROOT/benchmarks/oneshot_bench.py" "$@"

@@ -31,6 +31,14 @@ for ((index = 0; index < ${#parsed[@]}; index += 2)); do
   META["${parsed[index]}"]="${parsed[index + 1]}"
 done
 
+case "${EXTRA_ARGS[0]:-}" in
+  status|logs|verify|stop)
+    exec "$ROOT/runtime/single-lifecycle.sh" \
+      "${EXTRA_ARGS[0]}" "${META[CONTAINER_NAME]}" "${META[IMAGE]}" \
+      "${META[SERVED]}" "$PROFILE" "${EXTRA_ARGS[@]:1}"
+    ;;
+esac
+
 OFFLINE="${OFFLINE:-0}"
 [[ "$OFFLINE" == 0 || "$OFFLINE" == 1 ]] || fail "OFFLINE must be 0 or 1"
 PREFLIGHT_ONLY="${PREFLIGHT_ONLY:-0}"

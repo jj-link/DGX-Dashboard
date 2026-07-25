@@ -15,6 +15,9 @@ usage:
   ./serve.sh spark3  <vllm|sglang> <exact-artifact-name> [engine args...]
   ./serve.sh cluster <vllm|sglang> <exact-artifact-name> [status|logs|verify|stop]
 
+single-device lifecycle after the artifact:
+  status | logs [1..1000] | verify | stop
+
 targets:
   local    workstation (rtx6000)
   spark1   spark1-ts (spark)
@@ -163,13 +166,17 @@ if [[ "$target" == cluster ]]; then
   exec "$script" "$@"
 fi
 
+single_action=start
+case "${1:-}" in
+  status|logs|verify|stop) single_action="$1" ;;
+esac
 require_controller_gpu
 if [[ "$target" == local ]]; then
   mapfile -d '' -t resolved < <(resolve_single_script "$engine" rtx6000 "$artifact")
   (( ${#resolved[@]} == 2 )) || exit 1
   package="${resolved[0]}"
   script="${resolved[1]}"
-  printf 'target=local profile=rtx6000 engine=%s artifact=%s script=%s\n' "$engine" "$artifact" "$script" >&2
+  printf 'target=local profile=rtx6000 engine=%s artifact=%s action=%s script=%s\n' "$engine" "$artifact" "$single_action" "$script" >&2
   exec "$CONTROL_ROOT/runtime/rtx6000/run_${engine}_docker.sh" "$package" "$@"
 fi
 
@@ -182,7 +189,7 @@ expected_commit="$(controller_commit)"
 mapfile -d '' -t resolved < <(resolve_single_script "$engine" spark "$artifact")
 (( ${#resolved[@]} == 2 )) || exit 1
 script="${resolved[1]}"
-printf 'target=%s host=%s profile=spark engine=%s artifact=%s script=%s\n' "$target" "$host" "$engine" "$artifact" "$script" >&2
+printf 'target=%s host=%s profile=spark engine=%s artifact=%s action=%s script=%s\n' "$target" "$host" "$engine" "$artifact" "$single_action" "$script" >&2
 command=(env)
 for variable in "${single_control_environment[@]}" "${single_engine_environment[@]}"; do
   [[ -v "$variable" ]] && command+=("$variable=${!variable}")

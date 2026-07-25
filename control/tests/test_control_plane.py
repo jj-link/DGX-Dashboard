@@ -4,11 +4,13 @@ from __future__ import annotations
 import argparse
 import json
 import importlib.util
+import http.server
 import os
 import pathlib
 import shlex
 import subprocess
 import tempfile
+import threading
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
 PARSER = ROOT / "tools" / "parse-runtime-env.py"
@@ -21,6 +23,7 @@ KEYS = (
 )
 PUBLIC_IMAGE = "vllm/vllm-openai@sha256:251eba5cc7c12fed0b75da22a9240e582b1c9e39f6fbc064f86781b963bd814f"
 REVISION = "1" * 40
+RUN_ID = "12345678-1234-4abc-8def-1234567890ab"
 
 
 def run(command: list[str], environment: dict[str, str], timeout: int = 60) -> subprocess.CompletedProcess[str]:
@@ -270,7 +273,10 @@ def test_benchmark_dispatcher() -> None:
             "#!/usr/bin/python3\n"
             "import json, os, sys\n"
             f"json.dump({{'argv': sys.argv, 'base': os.environ.get('OPENAI_API_BASE'), "
-            f"'key': os.environ.get('OPENAI_API_KEY')}}, open({str(python_log)!r}, 'w'))\n"
+            f"'key': os.environ.get('OPENAI_API_KEY'), "
+            f"'target': os.environ.get('DGX_DASHBOARD_BENCHMARK_TARGET'), "
+            f"'run_id': os.environ.get('DGX_DASHBOARD_RUN_ID')}}, "
+            f"open({str(python_log)!r}, 'w'))\n"
             "print('benchmark stdout')\n"
             "print('benchmark stderr', file=sys.stderr)\n"
             "raise SystemExit(int(os.environ.get('PYTHON_EXIT', '0')))\n",
@@ -282,6 +288,7 @@ def test_benchmark_dispatcher() -> None:
             "PATH": f"{fake_bin}:/usr/bin:/bin",
             "OPENAI_API_BASE": "http://wrong.example/v1",
             "OPENAI_API_KEY": "do-not-send",
+            "DGX_DASHBOARD_RUN_ID": RUN_ID,
         })
 
         routes = (
@@ -308,6 +315,8 @@ def test_benchmark_dispatcher() -> None:
             ]
             assert captured["base"] == endpoint
             assert captured["key"] == "dummy"
+            assert captured["target"] == target
+            assert captured["run_id"] == RUN_ID
             if host is None:
                 assert not ssh_log.exists()
                 assert f"target={target} benchmark=oneshot endpoint={endpoint}" in completed.stderr
@@ -342,6 +351,15 @@ def test_benchmark_dispatcher() -> None:
             assert not python_log.exists()
 
         python_log.unlink(missing_ok=True)
+        invalid_run = run(
+            [str(BENCHMARK), "local", "oneshot"],
+            {**environment, "DGX_DASHBOARD_RUN_ID": "not-a-uuid"},
+        )
+        assert invalid_run.returncode == 1
+        assert "must be a lowercase UUID" in invalid_run.stderr
+        assert not python_log.exists()
+
+        python_log.unlink(missing_ok=True)
         failed_ssh = run(
             [str(BENCHMARK), "spark1", "oneshot"],
             {**environment, "SSH_EXIT": "23"},
@@ -364,6 +382,32 @@ def test_benchmark_dispatcher() -> None:
         )
         assert propagated.returncode == 19
 
+        docker_marker = temp / "docker-called"
+        (fake_bin / "docker").write_text(
+            "#!/usr/bin/env bash\n"
+            f"touch {shlex.quote(str(docker_marker))}\n",
+            encoding="utf-8",
+        )
+        (fake_bin / "docker").chmod(0o755)
+        unhealthy = run(
+            [
+                "/usr/bin/python3",
+                str(ROOT / "benchmarks" / "oneshot_bench.py"),
+                "--lang",
+                "python",
+                "--num-tests",
+                "0",
+            ],
+            {
+                **environment,
+                "OPENAI_API_BASE": "http://127.0.0.1:1/v1",
+                "DGX_DASHBOARD_BENCHMARK_TARGET": "local",
+            },
+        )
+        assert unhealthy.returncode == 2
+        assert "[health] FAIL:" in unhealthy.stderr
+        assert not docker_marker.exists()
+
     spec = importlib.util.spec_from_file_location("oneshot_bench_contract", ROOT / "benchmarks" / "oneshot_bench.py")
     assert spec and spec.loader
     module = importlib.util.module_from_spec(spec)
@@ -371,6 +415,101 @@ def test_benchmark_dispatcher() -> None:
     assert module.result_alias(None, "poolside/Laguna S-2.1") == "poolside-Laguna-S-2.1"
     assert module.result_alias("legacy-label", "ignored/model") == "legacy-label"
     assert module.result_alias(None, "///") == "model"
+    assert module.benchmark_identity({
+        "DGX_DASHBOARD_BENCHMARK_TARGET": "spark2",
+        "DGX_DASHBOARD_RUN_ID": RUN_ID,
+    }) == ("spark2", RUN_ID)
+    assert str(module.RESULTS_DIR) == "/var/lib/dgx-dashboard/benchmark-results"
+    for invalid_identity in (
+        {"DGX_DASHBOARD_BENCHMARK_TARGET": "unknown", "DGX_DASHBOARD_RUN_ID": RUN_ID},
+        {"DGX_DASHBOARD_BENCHMARK_TARGET": "local", "DGX_DASHBOARD_RUN_ID": "BAD"},
+    ):
+        try:
+            module.benchmark_identity(invalid_identity)
+        except ValueError:
+            pass
+        else:
+            raise AssertionError(invalid_identity)
+
+    with tempfile.TemporaryDirectory() as temporary:
+        exercise = pathlib.Path(temporary) / "exercise"
+        exercise.mkdir()
+        (exercise / "solution.py").write_text("pass\n", encoding="utf-8")
+        (exercise / "test_solution.py").write_text("def test_ok(): pass\n", encoding="utf-8")
+        problem = {
+            "dir": exercise,
+            "sol_rel": "solution.py",
+            "test_rel": "test_solution.py",
+        }
+        docker_commands: list[list[str]] = []
+        original_run = module.subprocess.run
+        module.BENCHMARK_RUN_ID = RUN_ID
+        module.BENCHMARK_TARGET = "local"
+
+        def fake_run(command: list[str], **kwargs: object) -> subprocess.CompletedProcess[str]:
+            docker_commands.append(command)
+            return subprocess.CompletedProcess(command, 0, "", "")
+
+        module.subprocess.run = fake_run
+        try:
+            result = module.run_in_docker(
+                problem, "python", 30, {"solution.py": "def answer(): return 42\n"}
+            )
+        finally:
+            module.subprocess.run = original_run
+        assert result["ok"]
+        docker_command = docker_commands[0]
+        assert ["--label", "io.dgx-dashboard.kind=benchmark"] == docker_command[5:7]
+        assert [
+            "--label",
+            f"io.dgx-dashboard.run-id={RUN_ID}",
+        ] == docker_command[7:9]
+
+        polyglot = pathlib.Path(temporary) / "polyglot"
+        (polyglot / "python" / "exercises" / "practice").mkdir(parents=True)
+        out_dir = pathlib.Path(temporary) / "results"
+        summary_args = argparse.Namespace(
+            alias="served-model",
+            target="local",
+            run_id=RUN_ID,
+            num_tests=0,
+            keywords="",
+            out_dir=str(out_dir),
+            backend=None,
+            quant=None,
+            kv_cache_type=None,
+            spec_decode=None,
+            hardware=None,
+            context_length=None,
+            tp_size=None,
+            reasoning="disabled",
+            reasoning_effort=None,
+            engine_version=None,
+            runtime_image=None,
+            runtime_image_digest=None,
+            model_source=None,
+            model_revision=None,
+            temperature=1.0,
+            max_tokens=32768,
+            timeout=600,
+            test_timeout=300,
+            concurrency=1,
+        )
+        original_polyglot = module.POLYGLOT
+        module.POLYGLOT = polyglot
+        module.subprocess.run = fake_run
+        try:
+            module.run_one_language("python", summary_args, "served-model")
+        finally:
+            module.POLYGLOT = original_polyglot
+            module.subprocess.run = original_run
+        summaries = list(out_dir.glob("*.json"))
+        assert len(summaries) == 1
+        assert f"-local-{RUN_ID}-python-oneshot-" in summaries[0].name
+        summary = json.loads(summaries[0].read_text())
+        assert summary["target"] == "local" and summary["run_id"] == RUN_ID
+        assert summary["meta"]["target"] == "local"
+        assert summary["meta"]["run_id"] == RUN_ID
 
 
 def write_fake_nvidia(path: pathlib.Path, output: str) -> None:
@@ -660,6 +799,138 @@ def test_remote_single_validation() -> None:
         assert "escapes" in rejected.stderr
         assert not marker.exists()
 
+def test_single_lifecycle() -> None:
+    with tempfile.TemporaryDirectory() as temporary:
+        temp = pathlib.Path(temporary)
+        package = make_test_package(temp, valid_values())
+        state_path = temp / "inspect.json"
+        calls_path = temp / "docker-calls.jsonl"
+        fake_bin = temp / "bin"
+        fake_bin.mkdir()
+        docker = fake_bin / "docker"
+        docker.write_text(
+            """#!/usr/bin/env python3
+import json
+import os
+from pathlib import Path
+import sys
+
+arguments = sys.argv[1:]
+state_path = Path(os.environ["FAKE_CONTAINER_STATE"])
+calls_path = Path(os.environ["FAKE_DOCKER_CALLS"])
+with calls_path.open("a", encoding="utf-8") as stream:
+    stream.write(json.dumps(arguments) + "\\n")
+if arguments[:2] == ["container", "inspect"]:
+    if not state_path.exists():
+        raise SystemExit(1)
+    print(state_path.read_text(encoding="utf-8"))
+    raise SystemExit(0)
+if arguments == ["info"]:
+    raise SystemExit(0)
+if arguments[:2] == ["container", "logs"]:
+    print("bounded-log")
+    raise SystemExit(0)
+if arguments[:2] == ["container", "stop"]:
+    rows = json.loads(state_path.read_text(encoding="utf-8"))
+    rows[0]["State"] = {"Status": "exited", "Running": False}
+    state_path.write_text(json.dumps(rows), encoding="utf-8")
+    raise SystemExit(0)
+if arguments[:2] == ["container", "rm"]:
+    state_path.unlink()
+    raise SystemExit(0)
+raise SystemExit(90)
+""",
+            encoding="utf-8",
+        )
+        docker.chmod(0o755)
+
+        class ModelsHandler(http.server.BaseHTTPRequestHandler):
+            def do_GET(self) -> None:
+                payload = json.dumps({"data": [{"id": "served-model"}]}).encode()
+                self.send_response(200)
+                self.send_header("Content-Type", "application/json")
+                self.send_header("Content-Length", str(len(payload)))
+                self.end_headers()
+                self.wfile.write(payload)
+
+            def log_message(self, format: str, *args: object) -> None:
+                pass
+
+        server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), ModelsHandler)
+        thread = threading.Thread(target=server.serve_forever, daemon=True)
+        thread.start()
+        try:
+            environment = minimal_environment(temp / "home")
+            environment.update({
+                "PATH": f"{fake_bin}:/usr/bin:/bin",
+                "FAKE_CONTAINER_STATE": str(state_path),
+                "FAKE_DOCKER_CALLS": str(calls_path),
+            })
+            runner = ROOT / "runtime" / "rtx6000" / "run_vllm_docker.sh"
+            command = [str(runner), str(package)]
+
+            absent = run([*command, "status"], environment)
+            assert absent.returncode == 0, absent.stderr
+            assert "state=absent" in absent.stdout
+
+            def write_state(image: str = PUBLIC_IMAGE) -> None:
+                state_path.write_text(json.dumps([{
+                    "Name": "/contract-container",
+                    "Config": {"Image": image, "Env": ["SERVED=served-model"]},
+                    "State": {"Status": "running", "Running": True},
+                    "HostConfig": {"PortBindings": {"8000/tcp": [{
+                        "HostIp": "127.0.0.1",
+                        "HostPort": str(server.server_port),
+                    }]}},
+                }]), encoding="utf-8")
+
+            write_state()
+            status = run([*command, "status"], environment)
+            assert status.returncode == 0, status.stderr
+            assert "state=running" in status.stdout
+
+            logs = run([*command, "logs", "7"], environment)
+            assert logs.returncode == 0, logs.stderr
+            assert logs.stdout.strip() == "bounded-log"
+            calls = [json.loads(line) for line in calls_path.read_text().splitlines()]
+            assert ["container", "logs", "--tail", "7", "contract-container"] in calls
+            assert all("--follow" not in call for call in calls)
+
+            rejected_logs = run([*command, "logs", "1001"], environment)
+            assert rejected_logs.returncode == 1
+            assert "between 1 and 1000" in rejected_logs.stderr
+
+            verified = run([*command, "verify"], environment)
+            assert verified.returncode == 0, verified.stderr
+            assert f"endpoint=http://127.0.0.1:{server.server_port}/v1" in verified.stdout
+            assert "model=served-model" in verified.stdout
+
+            write_state("wrong/image:v1")
+            before = len(calls_path.read_text().splitlines())
+            rejected_stop = run([*command, "stop"], environment)
+            assert rejected_stop.returncode == 1
+            assert "image is 'wrong/image:v1'" in rejected_stop.stderr
+            later_calls = [
+                json.loads(line)
+                for line in calls_path.read_text().splitlines()[before:]
+            ]
+            assert all(call[:2] not in (["container", "stop"], ["container", "rm"]) for call in later_calls)
+            assert state_path.exists()
+
+            write_state()
+            stopped = run([*command, "stop"], environment)
+            assert stopped.returncode == 0, stopped.stderr
+            assert "state=absent" in stopped.stdout
+            assert not state_path.exists()
+            stopped_again = run([*command, "stop"], environment)
+            assert stopped_again.returncode == 0, stopped_again.stderr
+            assert "state=absent" in stopped_again.stdout
+        finally:
+            server.shutdown()
+            server.server_close()
+            thread.join(timeout=5)
+
+
 
 def main() -> int:
     parser = argparse.ArgumentParser()
@@ -669,6 +940,7 @@ def main() -> int:
         test_metadata_parser()
         test_resolver_failures()
         test_single_preflight()
+        test_single_lifecycle()
         test_remote_single_validation()
     if arguments.group in {"all", "dispatcher"}:
         test_dispatcher()
