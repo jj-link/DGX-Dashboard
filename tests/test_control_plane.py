@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 from __future__ import annotations
 
+import argparse
 import json
 import os
 import pathlib
@@ -284,11 +285,16 @@ def test_resolver_failures() -> None:
 
 
 def main() -> int:
-    test_metadata_parser()
-    test_dispatcher()
-    test_gpu_detection()
-    test_resolver_failures()
-    print("control-plane contracts: passed")
+    parser = argparse.ArgumentParser()
+    parser.add_argument("group", choices=("all", "dispatcher", "runtime"), nargs="?", default="all")
+    arguments = parser.parse_args()
+    if arguments.group in {"all", "runtime"}:
+        test_metadata_parser()
+        test_resolver_failures()
+    if arguments.group in {"all", "dispatcher"}:
+        test_dispatcher()
+        test_gpu_detection()
+    print(f"control-plane {arguments.group}: passed")
     return 0
 
 
