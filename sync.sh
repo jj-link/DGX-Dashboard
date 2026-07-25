@@ -30,7 +30,7 @@ else
   done
 fi
 
-if ! git -C "$ROOT" fetch --quiet origin main; then
+if ! GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=url.https://github.com/.insteadOf GIT_CONFIG_VALUE_0=git@github.com: git -C "$ROOT" fetch --quiet origin main; then
   printf 'local: failed to fetch origin/main\n' >&2
   exit 1
 fi
