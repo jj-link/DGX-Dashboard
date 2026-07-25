@@ -863,7 +863,14 @@ raise SystemExit(90)
         docker.chmod(0o755)
 
         class ModelsHandler(http.server.BaseHTTPRequestHandler):
+            requests = 0
             def do_GET(self) -> None:
+                type(self).requests += 1
+                if type(self).requests == 1:
+                    self.send_response(503)
+                    self.send_header("Content-Length", "0")
+                    self.end_headers()
+                    return
                 payload = json.dumps({"data": [{"id": "served-model"}]}).encode()
                 self.send_response(200)
                 self.send_header("Content-Type", "application/json")
@@ -883,6 +890,7 @@ raise SystemExit(90)
                 "PATH": f"{fake_bin}:/usr/bin:/bin",
                 "FAKE_CONTAINER_STATE": str(state_path),
                 "FAKE_DOCKER_CALLS": str(calls_path),
+                "VERIFY_INTERVAL": "0",
             })
             runner = ROOT / "runtime" / "rtx6000" / "run_vllm_docker.sh"
             command = [str(runner), str(package)]
@@ -922,6 +930,7 @@ raise SystemExit(90)
             assert verified.returncode == 0, verified.stderr
             assert f"endpoint=http://127.0.0.1:{server.server_port}/v1" in verified.stdout
             assert "model=served-model" in verified.stdout
+            assert ModelsHandler.requests == 2
 
             write_state("wrong/image:v1")
             before = len(calls_path.read_text().splitlines())

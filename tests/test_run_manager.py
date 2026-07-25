@@ -263,6 +263,28 @@ def test_serving_start_runs_exact_verify_followup(tmp_path):
     assert "action=verify target=local artifact=recipe_local" in output
 
 
+
+def test_serving_verify_failure_runs_stop_and_status_cleanup(tmp_path):
+    root, state, commands, catalog = _make_builder(tmp_path)
+    _write_script(
+        root / "serve.sh",
+        "action=${4:-start}\n"
+        "printf 'action=%s\\n' \"$action\"\n"
+        "if [[ $action == verify ]]; then exit 7; fi\n"
+        "if [[ $action == stop || $action == status ]]; then printf 'container=x state=absent\\n'; fi\n",
+    )
+    _write_script(root / "benchmark.sh", "exit 0\n")
+    manager = RunManager(state, catalog, commands, retention=20)
+
+    submitted = manager.submit(_serving_operation(catalog, "local"))
+    terminal = _wait_terminal(manager, submitted["id"])
+    assert terminal["state"] == "failed"
+    assert terminal["error_code"] == "process_exit"
+    output = manager.read_log(submitted["id"], 0, 65_536)["data"]
+    assert "action=verify" in output
+    assert "action=stop" in output
+    assert "action=status" in output
+
 def test_restart_reconciles_benchmark_and_removes_only_labeled_containers(tmp_path):
     root, state, commands, catalog = _make_builder(tmp_path)
     _write_script(root / "benchmark.sh", "exit 0\n")

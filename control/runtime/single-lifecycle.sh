@@ -64,9 +64,18 @@ case "$ACTION" in
     ;;
   verify)
     (($# == 0)) || fail "verify accepts no arguments"
-    inspect_container || fail "container '$CONTAINER' is absent"
-    endpoint="$(inspect_identity verify)" || exit $?
-    model="$(python3 - "$endpoint" "$SERVED" <<'PY'
+    verify_timeout="${VERIFY_TIMEOUT:-900}"
+    [[ "$verify_timeout" =~ ^[1-9][0-9]{0,3}$ && "$verify_timeout" -le 1800 ]] ||
+      fail "VERIFY_TIMEOUT must be between 1 and 1800 seconds"
+    verify_interval="${VERIFY_INTERVAL:-5}"
+    [[ "$verify_interval" =~ ^[0-9]{1,2}$ && "$verify_interval" -le 60 ]] ||
+      fail "VERIFY_INTERVAL must be between 0 and 60 seconds"
+    deadline=$((SECONDS + verify_timeout))
+    last_error=''
+    while true; do
+      inspect_container || fail "container '$CONTAINER' is absent"
+      endpoint="$(inspect_identity verify)" || exit $?
+      if model="$(python3 - "$endpoint" "$SERVED" 2>&1 <<'PY'
 import json
 import sys
 import urllib.request
@@ -85,7 +94,16 @@ if expected not in models:
     )
 print(expected)
 PY
-)" || exit $?
+)"; then
+        break
+      fi
+      last_error="$model"
+      if (( SECONDS >= deadline )); then
+        printf '%s\n' "$last_error" >&2
+        exit 1
+      fi
+      sleep "$verify_interval"
+    done
     printf 'container=%s state=running endpoint=%s model=%s\n' \
       "$CONTAINER" "$endpoint" "$model"
     ;;

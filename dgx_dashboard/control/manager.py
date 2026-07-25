@@ -317,9 +317,14 @@ class RunManager:
                     else:
                         outcome, exit_code = self._wait_active(active, active.plan.verify.timeout)
 
-        cleanup_ok = True
-        if outcome in {"cancelled", "timed_out"}:
-            cleanup_ok = self._cleanup(active)
+        should_cleanup = outcome in {"cancelled", "timed_out"}
+        if (
+            active.operation.kind == "serving"
+            and active.operation.action == "start"
+            and (outcome != "exited" or exit_code != 0)
+        ):
+            should_cleanup = True
+        cleanup_ok = self._cleanup(active) if should_cleanup else True
 
         resolved_results: list[dict[str, str]] = []
         if active.operation.kind == "benchmark":
