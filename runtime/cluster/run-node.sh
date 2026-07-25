@@ -57,6 +57,7 @@ WORLD_SIZE=2
 case "$ENGINE/$ARTIFACT" in
   sglang/unsloth_qwen36_27b_nvfp4_dflash_tp2)
     MAX_MODEL_LEN=262144
+    MASTER_PORT=25001
     ;;
   vllm/deepseek_ai_deepseek_v4_flash_dspark_tp2)
     PROFILE="${CLUSTER_PROFILE:-quality}"
@@ -348,8 +349,12 @@ for mount in container.get("Mounts", []):
   command_line="$(docker exec "$CONTAINER" bash -lc "tr '\\0' ' ' </proc/1/cmdline")"
   [[ "$command_line" == *"--nnodes 2"* ]] || fail "container '$CONTAINER' command is missing --nnodes 2"
   [[ "$command_line" == *"--node-rank $RANK"* ]] || fail "container '$CONTAINER' command has the wrong node rank"
-  [[ "$command_line" == *"--master-addr $MASTER_ADDR"* ]] || fail "container '$CONTAINER' command has the wrong master address"
-  [[ "$command_line" == *"--master-port $MASTER_PORT"* ]] || fail "container '$CONTAINER' command has the wrong master port"
+  if [[ "$ENGINE" == vllm ]]; then
+    [[ "$command_line" == *"--master-addr $MASTER_ADDR"* ]] || fail "container '$CONTAINER' command has the wrong master address"
+    [[ "$command_line" == *"--master-port $MASTER_PORT"* ]] || fail "container '$CONTAINER' command has the wrong master port"
+  else
+    [[ "$command_line" == *"--dist-init-addr $MASTER_ADDR:$MASTER_PORT"* ]] || fail "container '$CONTAINER' command has the wrong distributed initialization address"
+  fi
   [[ "$command_line" == *"--tensor-parallel-size 2"* || "$command_line" == *"--tp-size 2"* ]] || fail "container '$CONTAINER' command is missing two-way tensor parallelism"
   if [[ "$RANK" == 0 ]]; then
     expected_host="$(single_tailscale_ipv4)"
@@ -358,11 +363,17 @@ for mount in container.get("Mounts", []):
   fi
   [[ "$command_line" == *"--host $expected_host"* ]] || fail "container '$CONTAINER' has the wrong API bind address"
   if [[ "$RANK" == 1 ]]; then
-    [[ "$command_line" == *"--headless"* ]] || fail "container '$CONTAINER' worker is not headless"
+    if [[ "$ENGINE" == vllm ]]; then
+      [[ "$command_line" == *"--headless"* ]] || fail "container '$CONTAINER' vLLM worker is not headless"
+    else
+      [[ "$command_line" != *"--headless"* ]] || fail "container '$CONTAINER' SGLang worker uses an unsupported headless flag"
+    fi
     port_clear || fail "worker port '$API_PORT' is listening"
   fi
   logs="$(docker logs "$CONTAINER" 2>&1)"
   grep -Fq "topology rank=$RANK world_size=$WORLD_SIZE master=$MASTER_ADDR:$MASTER_PORT dist_if=$DIST_IF rdma_hca=$RDMA_HCA" <<<"$logs" || fail "container '$CONTAINER' logs do not prove the expected topology"
+  grep -F "NCCL INFO NET/IB : Using" <<<"$logs" | grep -Fq "$RDMA_HCA:" || fail "container '$CONTAINER' logs do not prove RoCE transport"
+  grep -Fq "via NET/IB/" <<<"$logs" || fail "container '$CONTAINER' logs do not prove rank traffic over RoCE"
   local variable expected
   for variable in NCCL_NET NCCL_IB_DISABLE NCCL_IB_HCA NCCL_SOCKET_IFNAME GLOO_SOCKET_IFNAME TP_SOCKET_IFNAME MASTER_ADDR MASTER_PORT WORLD_SIZE NODE_RANK; do
     case "$variable" in

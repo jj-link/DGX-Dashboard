@@ -351,6 +351,8 @@ def test_node_preflight_and_launch() -> None:
             assert "CUDA_VISIBLE_DEVICES=0" in run_arguments
             assert "WORLD_SIZE=2" in run_arguments
             assert f"NODE_RANK={rank}" in run_arguments
+            expected_master_port = "25000" if engine == "vllm" else "25001"
+            assert f"MASTER_PORT={expected_master_port}" in run_arguments
             assert "NCCL_NET=IB" in run_arguments
             assert "NCCL_DEBUG=INFO" in run_arguments
             assert "NCCL_IB_HCA=rocep1s0f1" in run_arguments
@@ -411,11 +413,92 @@ def test_sglang_command_contract() -> None:
         assert "--cuda-graph-max-bs" not in arguments
 
 
+def test_sglang_worker_verification_contract() -> None:
+    with tempfile.TemporaryDirectory() as temporary:
+        temp = pathlib.Path(temporary)
+        fake_bin = temp / "bin"
+        fake_bin.mkdir()
+        executable(fake_bin / "ss", "#!/bin/bash\nexit 0\n")
+        executable(
+            fake_bin / "docker",
+            """#!/usr/bin/env python3
+import json, os, sys
+arguments = sys.argv[1:]
+if arguments[:2] == ["inspect", "-f"]:
+    template = arguments[2]
+    if ".State.Running" in template:
+        print("true")
+    elif ".Config.Env" in template:
+        print("\\n".join([
+            "NCCL_NET=IB",
+            "NCCL_IB_DISABLE=0",
+            "NCCL_IB_HCA=rocep1s0f1",
+            "NCCL_SOCKET_IFNAME=enp1s0f1np1",
+            "GLOO_SOCKET_IFNAME=enp1s0f1np1",
+            "TP_SOCKET_IFNAME=enp1s0f1np1",
+            "MASTER_ADDR=10.0.0.1",
+            "MASTER_PORT=25001",
+            "WORLD_SIZE=2",
+            "NODE_RANK=1",
+        ]))
+    sys.exit(0)
+if arguments and arguments[0] == "inspect":
+    print(json.dumps([{
+        "HostConfig": {
+            "Privileged": False,
+            "CapDrop": ["ALL"],
+            "SecurityOpt": ["no-new-privileges:true"],
+            "ReadonlyRootfs": True,
+            "PidsLimit": 4096,
+            "NetworkMode": "host",
+        },
+        "Mounts": [],
+    }]))
+    sys.exit(0)
+if arguments and arguments[0] == "exec":
+    print(os.environ.get(
+        "FAKE_COMMAND",
+        "python3 -m sglang.launch_server --nnodes 2 --node-rank 1 "
+        "--dist-init-addr 10.0.0.1:25001 --tp-size 2 --host 127.0.0.1",
+    ))
+    sys.exit(0)
+if arguments and arguments[0] == "logs":
+    print("topology rank=1 world_size=2 master=10.0.0.1:25001 "
+          "dist_if=enp1s0f1np1 rdma_hca=rocep1s0f1")
+    print("NCCL INFO NET/IB : Using [0]rocep1s0f1:1/RoCE")
+    print("Channel 00/0 : 1[0] -> 0[0] [send] via NET/IB/0")
+    sys.exit(0)
+sys.exit(1)
+""",
+        )
+        environment = {
+            "PATH": f"{fake_bin}:/usr/bin:/bin",
+            "HOME": str(temp / "home"),
+            "INFERENCE_ROOT": str(ROOT),
+        }
+        completed = run(
+            [str(NODE), "verify", "sglang", "unsloth_qwen36_27b_nvfp4_dflash_tp2", "1"],
+            environment,
+        )
+        assert completed.returncode == 0, completed.stderr
+        environment["FAKE_COMMAND"] = (
+            "python3 -m sglang.launch_server --nnodes 2 --node-rank 1 "
+            "--dist-init-addr 10.0.0.9:25001 --tp-size 2 --host 127.0.0.1"
+        )
+        rejected = run(
+            [str(NODE), "verify", "sglang", "unsloth_qwen36_27b_nvfp4_dflash_tp2", "1"],
+            environment,
+        )
+        assert rejected.returncode != 0
+        assert "wrong distributed initialization address" in rejected.stderr
+
+
 def main() -> int:
     test_cluster_front_door()
     test_transactional_failures()
     test_node_preflight_and_launch()
     test_sglang_command_contract()
+    test_sglang_worker_verification_contract()
     print("cluster contracts: passed")
     return 0
 
