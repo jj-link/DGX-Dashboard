@@ -15,6 +15,16 @@ RANK="$4"
 [[ "$ENGINE" == vllm || "$ENGINE" == sglang ]] || fail "invalid engine '$ENGINE'"
 [[ "$ARTIFACT" =~ ^[a-z0-9][a-z0-9_]*$ ]] || fail "invalid artifact '$ARTIFACT'"
 [[ "$RANK" == 0 || "$RANK" == 1 ]] || fail "rank must be 0 or 1"
+PREFLIGHT_REPLACE_CONTAINER="${PREFLIGHT_REPLACE_CONTAINER:-}"
+PREFLIGHT_REPLACE_IMAGE_ID="${PREFLIGHT_REPLACE_IMAGE_ID:-}"
+PREFLIGHT_REPLACE_NETWORK_MODE="${PREFLIGHT_REPLACE_NETWORK_MODE:-}"
+if [[ -n "$PREFLIGHT_REPLACE_CONTAINER$PREFLIGHT_REPLACE_IMAGE_ID$PREFLIGHT_REPLACE_NETWORK_MODE" ]]; then
+  [[ "$ACTION" == preflight ]] || fail "replacement allowances apply only to preflight"
+  [[ -n "$PREFLIGHT_REPLACE_CONTAINER" && -n "$PREFLIGHT_REPLACE_IMAGE_ID" && -n "$PREFLIGHT_REPLACE_NETWORK_MODE" ]] || fail "all PREFLIGHT_REPLACE_* values are required"
+  [[ "$PREFLIGHT_REPLACE_CONTAINER" =~ ^[A-Za-z0-9][A-Za-z0-9_.-]*$ ]] || fail "PREFLIGHT_REPLACE_CONTAINER is invalid"
+  [[ "$PREFLIGHT_REPLACE_IMAGE_ID" =~ ^sha256:[0-9a-f]{64}$ ]] || fail "PREFLIGHT_REPLACE_IMAGE_ID must be an immutable Docker image ID"
+  [[ "$PREFLIGHT_REPLACE_NETWORK_MODE" =~ ^[A-Za-z0-9_.:-]+$ ]] || fail "PREFLIGHT_REPLACE_NETWORK_MODE is invalid"
+fi
 
 ROOT="${INFERENCE_ROOT:-/home/jjlink/inference}"
 PACKAGE="$ROOT/serve/cluster/$ENGINE/$ARTIFACT"
@@ -131,6 +141,40 @@ port_clear() {
   return 0
 }
 
+verify_replacement_container() {
+  python3 - "$PREFLIGHT_REPLACE_CONTAINER" "$PREFLIGHT_REPLACE_IMAGE_ID" "$PREFLIGHT_REPLACE_NETWORK_MODE" <<'PY'
+import json
+import subprocess
+import sys
+
+name, expected_image, expected_network_mode = sys.argv[1:]
+completed = subprocess.run(
+    ["docker", "container", "inspect", name],
+    text=True,
+    capture_output=True,
+)
+if completed.returncode:
+    raise SystemExit(f"replacement container {name!r} is unavailable")
+rows = json.loads(completed.stdout)
+if len(rows) != 1:
+    raise SystemExit(f"expected exactly one replacement container named {name!r}")
+container = rows[0]
+if not container.get("State", {}).get("Running"):
+    raise SystemExit(f"replacement container {name!r} is not running")
+if container.get("Image") != expected_image:
+    raise SystemExit(
+        f"replacement container {name!r} image is {container.get('Image')!r}; "
+        f"expected {expected_image!r}"
+    )
+network_mode = container.get("HostConfig", {}).get("NetworkMode")
+if network_mode != expected_network_mode:
+    raise SystemExit(
+        f"replacement container {name!r} network mode is {network_mode!r}; "
+        f"expected {expected_network_mode!r}"
+    )
+PY
+}
+
 preflight() {
   command -v docker >/dev/null 2>&1 || fail "docker is unavailable"
   command -v nvidia-smi >/dev/null 2>&1 || fail "nvidia-smi is unavailable"
@@ -150,7 +194,16 @@ preflight() {
   ibv_devinfo -d "$RDMA_HCA" >/dev/null 2>&1 || fail "$RDMA_HCA is not an RDMA device"
   docker image inspect "$IMAGE" >/dev/null 2>&1 || fail "image '$IMAGE' is unavailable"
   ! docker container inspect "$CONTAINER" >/dev/null 2>&1 || fail "container '$CONTAINER' already exists"
-  port_clear || fail "port '$API_PORT' is already in use"
+  if [[ -n "$PREFLIGHT_REPLACE_CONTAINER" ]]; then
+    verify_replacement_container
+    if [[ "$RANK" == 0 ]]; then
+      ! port_clear || fail "recorded replacement container does not own port '$API_PORT'"
+    else
+      port_clear || fail "worker port '$API_PORT' is already in use"
+    fi
+  else
+    port_clear || fail "port '$API_PORT' is already in use"
+  fi
   resolve_artifacts
   local api_host=''
   if [[ "$RANK" == 0 ]]; then

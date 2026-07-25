@@ -114,6 +114,12 @@ def test_cluster_front_door() -> None:
 
         capture.unlink()
         environment["PREFLIGHT_ONLY"] = "1"
+        old_image = "sha256:" + "2" * 64
+        environment.update({
+            "PREFLIGHT_REPLACE_CONTAINER": "old-production",
+            "PREFLIGHT_REPLACE_IMAGE_ID": old_image,
+            "PREFLIGHT_REPLACE_NETWORK_MODE": "host",
+        })
         completed = run([
             str(FRONT), "cluster", "sglang", "unsloth_qwen36_27b_nvfp4_dflash_tp2"
         ], environment)
@@ -121,6 +127,9 @@ def test_cluster_front_door() -> None:
         assert "action=start" in completed.stderr
         assert "preflight complete" in completed.stdout
         assert action_pairs(records(capture)) == [("preflight", "0"), ("preflight", "1")]
+        assert all("PREFLIGHT_REPLACE_CONTAINER=old-production" in entry["remote"] for entry in records(capture))
+        assert all(f"PREFLIGHT_REPLACE_IMAGE_ID={old_image}" in entry["remote"] for entry in records(capture))
+        assert all("PREFLIGHT_REPLACE_NETWORK_MODE=host" in entry["remote"] for entry in records(capture))
         assert not nvidia_capture.exists()
 
         for artifact in ("../escape", "/tmp/escape", "bad.name"):
@@ -216,7 +225,10 @@ fi
 """,
     )
     executable(fake_bin / "ibv_devinfo", "#!/usr/bin/env bash\nexit 0\n")
-    executable(fake_bin / "ss", "#!/usr/bin/env bash\nexit 0\n")
+    executable(
+        fake_bin / "ss",
+        "#!/usr/bin/env bash\n[[ \"${FAKE_PORT_IN_USE:-0}\" == 1 ]] && printf '%s\n' 'LISTEN 0 128 0.0.0.0:8888 0.0.0.0:*'\nexit 0\n",
+    )
     executable(
         fake_bin / "docker",
         """#!/usr/bin/env python3
@@ -225,6 +237,13 @@ arguments = sys.argv[1:]
 with pathlib.Path(os.environ["DOCKER_CAPTURE"]).open("a", encoding="utf-8") as stream:
     stream.write(json.dumps(arguments) + "\\n")
 if arguments[:2] == ["container", "inspect"]:
+    if arguments[2] == "old-production":
+        print(json.dumps([{
+            "State": {"Running": True},
+            "Image": os.environ["FAKE_OLD_IMAGE_ID"],
+            "HostConfig": {"NetworkMode": "host"},
+        }]))
+        sys.exit(0)
     sys.exit(1)
 if arguments and arguments[0] == "run":
     print("new-container-id")
@@ -274,6 +293,36 @@ def test_node_preflight_and_launch() -> None:
                 assert "MODEL_REPO_HOST=" in completed.stdout
                 if rank == "0":
                     assert "API_HOST=100.64.0.8" in completed.stdout
+
+        old_image = "sha256:" + "2" * 64
+        replacement_environment = dict(environment)
+        replacement_environment.update({
+            "PREFLIGHT_REPLACE_CONTAINER": "old-production",
+            "PREFLIGHT_REPLACE_IMAGE_ID": old_image,
+            "PREFLIGHT_REPLACE_NETWORK_MODE": "host",
+            "FAKE_OLD_IMAGE_ID": old_image,
+            "FAKE_PORT_IN_USE": "1",
+        })
+        completed = run(
+            [str(NODE), "preflight", "vllm", "deepseek_ai_deepseek_v4_flash_dspark_tp2", "0"],
+            replacement_environment,
+        )
+        assert completed.returncode == 0, completed.stderr
+        worker_replacement_environment = dict(replacement_environment)
+        worker_replacement_environment.pop("FAKE_PORT_IN_USE")
+        completed = run(
+            [str(NODE), "preflight", "vllm", "deepseek_ai_deepseek_v4_flash_dspark_tp2", "1"],
+            worker_replacement_environment,
+        )
+        assert completed.returncode == 0, completed.stderr
+        mismatched_environment = dict(replacement_environment)
+        mismatched_environment["PREFLIGHT_REPLACE_IMAGE_ID"] = "sha256:" + "3" * 64
+        rejected = run(
+            [str(NODE), "preflight", "vllm", "deepseek_ai_deepseek_v4_flash_dspark_tp2", "0"],
+            mismatched_environment,
+        )
+        assert rejected.returncode == 1
+        assert "replacement container 'old-production' image is" in rejected.stderr
 
         launch_cases = [
             ("sglang", "unsloth_qwen36_27b_nvfp4_dflash_tp2", "0"),

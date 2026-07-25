@@ -87,6 +87,9 @@ run_remote() {
   [[ -z "${HF_CACHE+x}" ]] || command+=("HF_CACHE=$HF_CACHE")
   [[ -z "${CLUSTER_PROFILE+x}" ]] || command+=("CLUSTER_PROFILE=$CLUSTER_PROFILE")
   [[ -z "${LOG_LINES+x}" ]] || command+=("LOG_LINES=$LOG_LINES")
+  [[ -z "${PREFLIGHT_REPLACE_CONTAINER+x}" ]] || command+=("PREFLIGHT_REPLACE_CONTAINER=$PREFLIGHT_REPLACE_CONTAINER")
+  [[ -z "${PREFLIGHT_REPLACE_IMAGE_ID+x}" ]] || command+=("PREFLIGHT_REPLACE_IMAGE_ID=$PREFLIGHT_REPLACE_IMAGE_ID")
+  [[ -z "${PREFLIGHT_REPLACE_NETWORK_MODE+x}" ]] || command+=("PREFLIGHT_REPLACE_NETWORK_MODE=$PREFLIGHT_REPLACE_NETWORK_MODE")
   command+=("$REMOTE_ROOT/runtime/cluster/run-node.sh" "$node_action" "$ENGINE" "$ARTIFACT" "$rank")
   local quoted='' argument
   for argument in "${command[@]}"; do
