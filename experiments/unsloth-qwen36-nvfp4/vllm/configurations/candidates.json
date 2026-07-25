@@ -1,0 +1,35 @@
+{
+  "shared": {
+    "max_model_len": 8192,
+    "gpu_memory_utilization": 0.9,
+    "max_num_batched_tokens": 8192,
+    "max_num_seqs": 4,
+    "kv_cache_dtype": "bfloat16",
+    "mamba_cache_dtype": "float32",
+    "mamba_ssm_cache_dtype": "float32",
+    "attention_backend": "auto",
+    "chunked_prefill": true,
+    "prefix_caching": false,
+    "generation_config": "vllm"
+  },
+  "baseline": {"speculative_config": null},
+  "mtp": [
+    {"method": "mtp", "num_speculative_tokens": 1},
+    {"method": "mtp", "num_speculative_tokens": 2},
+    {"method": "mtp", "num_speculative_tokens": 4}
+  ],
+  "dflash_27b": [
+    {"method": "dflash", "model": "z-lab/Qwen3.6-27B-DFlash", "num_speculative_tokens": 4},
+    {"method": "dflash", "model": "z-lab/Qwen3.6-27B-DFlash", "num_speculative_tokens": 8},
+    {"method": "dflash", "model": "z-lab/Qwen3.6-27B-DFlash", "num_speculative_tokens": 12}
+  ],
+  "dflash_35b_a3b": [
+    {"method": "dflash", "model": "z-lab/Qwen3.6-35B-A3B-DFlash", "num_speculative_tokens": 4},
+    {"method": "dflash", "model": "z-lab/Qwen3.6-35B-A3B-DFlash", "num_speculative_tokens": 8},
+    {"method": "dflash", "model": "z-lab/Qwen3.6-35B-A3B-DFlash", "num_speculative_tokens": 12}
+  ],
+  "runtime_variants": [
+    {"name": "mtp4-kvfp8", "method": "mtp", "num_speculative_tokens": 4, "kv_cache_dtype": "fp8", "mamba_cache_dtype": "float32", "mamba_ssm_cache_dtype": "float32"},
+    {"name": "mtp4-statebf16", "method": "mtp", "num_speculative_tokens": 4, "kv_cache_dtype": "bfloat16", "mamba_cache_dtype": "bfloat16", "mamba_ssm_cache_dtype": "bfloat16"}
+  ]
+}

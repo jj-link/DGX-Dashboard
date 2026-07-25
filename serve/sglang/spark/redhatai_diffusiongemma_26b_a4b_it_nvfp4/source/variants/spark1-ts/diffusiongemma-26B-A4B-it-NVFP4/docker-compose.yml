@@ -1,0 +1,26 @@
+services:
+  diffusiongemma:
+    image: lmsysorg/sglang:dev-cu13
+    container_name: sglang-diffusiongemma
+    restart: "no"
+    ports:
+      - "8000:30000"
+    ipc: host
+    shm_size: 32g
+    volumes:
+      - ${HOME}/models:/models
+    environment:
+      HF_TOKEN: ${HF_TOKEN}
+      HF_HOME: /models
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
+    entrypoint: ["/bin/bash", "-c"]
+    command:
+      - pip install --upgrade transformers && python3 -m sglang.launch_server --model-path /models/hub/models--RedHatAI--diffusiongemma-26B-A4B-it-NVFP4/snapshots/d27cd4ac1672152fd6738fe8ffc8ef99be994c5a --host 0.0.0.0 --port 30000 --served-model-name diffusiongemma-26B-A4B-it-NVFP4 --trust-remote-code --tp-size 1 --attention-backend flashinfer --context-length 131072 --mem-fraction-static 0.85 --enable-metrics --max-running-requests
+      - --chunked-prefill-size
+      - "2048" 2

@@ -1,0 +1,62 @@
+services:
+  gemma4-31b-nvfp4-dflash:
+    image: sglang:gemma4-dflash
+    container_name: sglang-gemma4-31b-nvfp4-dflash
+    restart: "no"
+    ports:
+      - "8000:30000"
+    ipc: host
+    shm_size: 32g
+    volumes:
+      - ${HOME}/models:/models
+    environment:
+      HF_TOKEN: ${HF_TOKEN}
+      HF_HOME: /models
+      SGLANG_ENABLE_SPEC_V2: "1"
+      SGLANG_ENABLE_JIT_DEEPGEMM: "0"
+      FLASHINFER_DISABLE_VERSION_CHECK: "1"
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
+    command:
+      - python3
+      - -m
+      - sglang.launch_server
+      - --model-path
+      - /models/hub/models--nvidia--Gemma-4-31B-IT-NVFP4/snapshots/e5ef03afa233c35cb000323ff098d4291e1dd07c
+      - --host
+      - 0.0.0.0
+      - --port
+      - "30000"
+      - --served-model-name
+      - Gemma-4-31B-IT-NVFP4-DFLASH
+      - --trust-remote-code
+      - --tp-size
+      - "1"
+      - --attention-backend
+      - triton
+      - --context-length
+      - "262144"
+      - --speculative-algorithm
+      - DFLASH
+      - --speculative-draft-model-path
+      - /models/hub/models--z-lab--gemma-4-31B-it-DFlash
+      - --speculative-draft-attention-backend
+      - fa4
+      - --speculative-num-draft-tokens
+      - "8"
+      - --speculative-draft-window-size
+      - "8192"
+      - --mamba-scheduler-strategy
+      - extra_buffer
+      - --mem-fraction-static
+      - "0.85"
+      - --enable-metrics
+      - --max-running-requests
+      - "4"
+      - --chunked-prefill-size
+      - "2048"

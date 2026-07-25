@@ -1,0 +1,2 @@
+FROM vllm/vllm-openai@sha256:251eba5cc7c12fed0b75da22a9240e582b1c9e39f6fbc064f86781b963bd814f
+COPY vllm /usr/local/lib/python3.12/dist-packages/vllm

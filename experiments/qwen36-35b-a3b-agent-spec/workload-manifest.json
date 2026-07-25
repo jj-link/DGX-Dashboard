@@ -1,0 +1,86 @@
+{
+  "concurrency": 1,
+  "edit_expected_sha256": "740c640246e45cb73167df37586b7a58f57650cf91bd72526ca08946f19c8b3d",
+  "edit_source_sha256": "fb0e8583b49a2051671145291b5301ee8924fd4b8e74e1d8f16c160cc6b10007",
+  "fixed_server_invariants": {
+    "chunked_prefill": true,
+    "concurrency": 1,
+    "gpu_memory_utilization": 0.92,
+    "image": "vllm/vllm-openai@sha256:251eba5cc7c12fed0b75da22a9240e582b1c9e39f6fbc064f86781b963bd814f",
+    "kv_cache_dtype": "checkpoint-default FP8 kv_cache_scheme (no CLI override)",
+    "mamba_secondary_cache_dtype": "float16",
+    "mamba_ssm_cache_dtype": "float32",
+    "max_model_len": 262144,
+    "max_num_batched_tokens": 8192,
+    "max_num_seqs": 4,
+    "prefix_caching": true,
+    "served_model_during_benchmark": "benchmark_qwen36_35b_a3b_nvfp4_fast",
+    "target_checkpoint": "/models/hub/models--unsloth--Qwen3.6-35B-A3B-NVFP4-Fast/snapshots/11fb1afff493ad0d94c808ceecdf73b8215ccc7a",
+    "target_quantization": "checkpoint compressed-tensors mixed NVFP4/FP8",
+    "target_revision": "11fb1afff493ad0d94c808ceecdf73b8215ccc7a"
+  },
+  "ignore_eos": false,
+  "natural_stopping": true,
+  "qualification_rounds": 3,
+  "request_order": [
+    "tool_routing",
+    "structured_debugging",
+    "agent_implementation",
+    "long_context_review",
+    "novel_reasoning",
+    "full_file_editing"
+  ],
+  "review_source_sha256": "41df6f86c63f1d4b1ab0c20ef0de4ac5f947d6fe5579de198a085e381eed32ed",
+  "schema_version": 1,
+  "seed": 424242,
+  "tasks": [
+    {
+      "id": "tool_routing",
+      "max_tokens": 256,
+      "request_sha256": "340506df90a8055330e9d21fac751df82c694cf4aa832fc6fa29b18f48bc86dd",
+      "validator": "tool"
+    },
+    {
+      "id": "structured_debugging",
+      "max_tokens": 512,
+      "request_sha256": "09bcc714ed2b25b76cdfc8811eb321288e3c4d6e4e35326d9f45c6183a2ed1d6",
+      "validator": "debug"
+    },
+    {
+      "id": "agent_implementation",
+      "max_tokens": 3000,
+      "request_sha256": "ab67a0c898ce55396febbcf34b11e0a369dca85cdb01cf8f114a7c4d50ea1220",
+      "validator": "implementation"
+    },
+    {
+      "id": "long_context_review",
+      "max_tokens": 1400,
+      "request_sha256": "ffe877983a3ffd63a864ecc272593db165dc827f917bdb1daec9319ecfc5abab",
+      "validator": "review"
+    },
+    {
+      "id": "novel_reasoning",
+      "max_tokens": 2000,
+      "request_sha256": "204baebcd56cf2cade64da83a46ddc89d671c43bc338fd556fbbf66f6ab258c9",
+      "validator": "reasoning"
+    },
+    {
+      "id": "full_file_editing",
+      "max_tokens": 4000,
+      "request_sha256": "da29bc4dd572c64f8187c6cc1d106265639a5fd83268bfbee45ed2cdb327d461",
+      "validator": "edit"
+    }
+  ],
+  "temperature": 0.0,
+  "top_p": 1.0,
+  "warmup_is_full_corpus": true,
+  "warmup_request_order": [
+    "tool_routing",
+    "structured_debugging",
+    "agent_implementation",
+    "long_context_review",
+    "novel_reasoning",
+    "full_file_editing"
+  ],
+  "warmup_rounds": 1
+}

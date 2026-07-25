@@ -1,0 +1,18 @@
+# DFlash variant image — vLLM fork PR #40898 (z-lab DFlash speculative decoding).
+# SEPARATE tag (qwen-vllm:dflash) so the supply-chain-pinned qwen-vllm:pinned
+# image is NOT touched. Deliberate, user-requested, experiment-scoped install
+# of an unmerged upstream PR.
+FROM qwen-vllm:pinned
+
+# The runtime base lacks the full CUDA dev toolkit (headers/libs), so a true
+# from-source compile is impractical here. VLLM_USE_PRECOMPILED=1 pulls
+# vLLM's prebuilt CUDA extensions and overlays ONLY the PR's Python sources
+# (DFlash = a Python drafter model + scheduler/attention-metadata plumbing),
+# which is both correct for this PR and avoids the toolchain rabbit hole.
+ENV VLLM_USE_PRECOMPILED=1
+
+RUN apt-get update && apt-get install -y --no-install-recommends git \
+    && rm -rf /var/lib/apt/lists/*
+
+RUN pip install --no-cache-dir -U \
+      "vllm @ git+https://github.com/vllm-project/vllm.git@refs/pull/40898/head"

@@ -1,0 +1,37 @@
+services:
+  sglang:
+    image: sglang:modelopt-pr30078
+    container_name: sglang-qwen36-27b-nvfp4
+    ports:
+      - 8000:30000
+    shm_size: 32g
+    tmpfs:
+      - /tmp:rw,nosuid,nodev,exec,size=16g
+    environment:
+      - HOME=/cache
+      - HF_HOME=/models
+      - HF_HUB_OFFLINE=1
+      - CUDA_DEVICE_ORDER=PCI_BUS_ID
+      - CUDA_VISIBLE_DEVICES=0
+      - TORCHINDUCTOR_CACHE_DIR=/cache/torchinductor
+      - TRITON_CACHE_DIR=/cache/triton
+    volumes:
+      - /home/jjlink/models:/models:ro
+      - sglang-compile-cache:/cache
+      - /home/jjlink/inference/sglang/Qwen3.6-27B-NVFP4-nvidia/scripts:/workspace:ro
+    security_opt:
+      - no-new-privileges
+    cap_drop:
+      - ALL
+    pids_limit: 4096
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - capabilities: [gpu]
+    working_dir: /workspace
+    entrypoint: /bin/bash
+    command: /workspace/serve.sh
+
+volumes:
+  sglang-compile-cache:

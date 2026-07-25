@@ -1,0 +1,339 @@
+# SPDX-License-Identifier: Apache-2.0
+# SPDX-FileCopyrightText: Copyright contributors to the vLLM project
+from dataclasses import dataclass
+from typing import Any
+
+import numpy as np
+import torch
+import torch.nn as nn
+
+from vllm.config import VllmConfig
+from vllm.config.compilation import CUDAGraphMode
+from vllm.logger import init_logger
+from vllm.triton_utils import tl, triton
+from vllm.v1.attention.backends.gdn_attn import GDNAttentionMetadataBuilder
+from vllm.v1.attention.backends.mamba2_attn import Mamba2AttentionMetadataBuilder
+from vllm.v1.attention.backends.utils import mamba_get_block_table_tensor
+from vllm.v1.kv_cache_interface import KVCacheConfig, MambaSpec
+from vllm.v1.worker.gpu.attn_utils import build_attn_metadata
+from vllm.v1.worker.gpu.input_batch import InputBatch
+from vllm.v1.worker.gpu.mm.encoder_cache import EncoderCache
+from vllm.v1.worker.gpu.model_states.default import DefaultModelState
+from vllm.v1.worker.gpu.model_states.interface import ModelSpecificAttnMetadata
+from vllm.v1.worker.utils import AttentionGroup
+
+logger = init_logger(__name__)
+
+
+@dataclass
+class MambaHybridAttnMetadata(ModelSpecificAttnMetadata):
+    is_prefilling: torch.Tensor
+    num_accepted_tokens: torch.Tensor | None = None
+    num_decode_draft_tokens_cpu: torch.Tensor | None = None
+
+    def get_extra_common_attn_kwargs(
+        self,
+        kv_cache_group_id: int,
+        num_reqs: int,
+    ) -> dict[str, Any]:
+        return {"is_prefilling": self.is_prefilling[:num_reqs]}
+
+    def get_extra_attn_kwargs(
+        self,
+        attn_metadata_builder: Any,
+        num_reqs: int,
+    ) -> dict[str, Any]:
+        if not isinstance(
+            attn_metadata_builder,
+            (Mamba2AttentionMetadataBuilder, GDNAttentionMetadataBuilder),
+        ):
+            return {}
+        return {
+            "num_accepted_tokens": None
+            if self.num_accepted_tokens is None
+            else self.num_accepted_tokens[:num_reqs],
+            "num_decode_draft_tokens_cpu": None
+            if self.num_decode_draft_tokens_cpu is None
+            else self.num_decode_draft_tokens_cpu[:num_reqs],
+        }
+
+
+class MambaHybridModelState(DefaultModelState):
+    """Model state for hybrid attention + Mamba / linear-attention models."""
+
+    def __init__(
+        self,
+        vllm_config: VllmConfig,
+        model: nn.Module,
+        encoder_cache: EncoderCache | None,
+        device: torch.device,
+    ) -> None:
+        super().__init__(vllm_config, model, encoder_cache, device)
+        self.num_accepted_tokens_gpu = torch.ones(
+            self.max_num_reqs, dtype=torch.int32, device=self.device
+        )
+        self.is_spec_decode_align_mode = (
+            vllm_config.num_speculative_tokens > 0
+            and vllm_config.cache_config.mamba_cache_mode == "align"
+        )
+        self.last_block_tables: tuple[torch.Tensor, ...] | None = None
+        self.last_kv_cache_config: KVCacheConfig | None = None
+        self.last_seq_lens: torch.Tensor | None = None
+        self.last_query_start_loc: torch.Tensor | None = None
+        self.last_num_reqs = 0
+        self.last_num_draft_tokens = 0
+
+    def prepare_attn(
+        self,
+        input_batch: InputBatch,
+        cudagraph_mode: CUDAGraphMode,
+        block_tables: tuple[torch.Tensor, ...],
+        slot_mappings: torch.Tensor,
+        attn_groups: list[list[AttentionGroup]],
+        kv_cache_config: KVCacheConfig,
+        for_capture: bool = False,
+    ) -> dict[str, Any]:
+        if cudagraph_mode == CUDAGraphMode.FULL:
+            num_reqs = input_batch.num_reqs_after_padding
+            num_tokens = input_batch.num_tokens_after_padding
+        else:
+            num_reqs = input_batch.num_reqs
+            num_tokens = input_batch.num_tokens
+        query_start_loc_cpu = torch.from_numpy(input_batch.query_start_loc_np)
+        max_query_len = input_batch.num_scheduled_tokens.max().item()
+        seq_lens_cpu_upper_bound = input_batch.seq_lens_cpu_upper_bound
+        if for_capture:
+            # Capture with worst-case max_seq_len so the graph is valid at any replay.
+            max_seq_len = self.max_model_len
+        else:
+            max_seq_len = seq_lens_cpu_upper_bound[:num_reqs].max().item()
+
+        is_prefilling = torch.zeros(num_reqs, dtype=torch.bool, device="cpu")
+        is_prefilling[: input_batch.num_reqs] = torch.from_numpy(
+            input_batch.is_prefilling_np
+        )
+        # During CUDAGraph capture, num_decode_draft_tokens_cpu and num_accepted_tokens
+        # are created by attn_metadata_builder.build_for_cudagraph_capture, so we only
+        # compute them during actual (non-capture) forward execution.
+        num_accepted_tokens = None
+        num_decode_draft_tokens_cpu = None
+        if not for_capture:
+            num_accepted_tokens = self.num_accepted_tokens_gpu.new_ones(num_reqs)
+            num_accepted_tokens[: input_batch.num_reqs] = self.num_accepted_tokens_gpu[
+                input_batch.idx_mapping
+            ]
+
+            # GDN uses >= 0 to select spec-decode rows, so non-decode rows
+            # need the -1 sentinel rather than a raw zero draft count.
+            num_decode_draft_tokens_np = np.full(num_reqs, -1, dtype=np.int32)
+            if input_batch.num_draft_tokens_per_req is not None:
+                has_draft_tokens = input_batch.num_draft_tokens_per_req > 0
+                spec_decode_mask = has_draft_tokens & ~input_batch.is_prefilling_np
+                num_decode_draft_tokens_np[: input_batch.num_reqs] = np.where(
+                    spec_decode_mask, input_batch.num_draft_tokens_per_req, -1
+                )
+            num_decode_draft_tokens_cpu = torch.from_numpy(num_decode_draft_tokens_np)
+
+            if self.is_spec_decode_align_mode:
+                # postprocess_state runs immediately after this target step. These
+                # tensors remain valid until then and avoid changing the model-runner
+                # interface or copying per-request counters through the host.
+                self.last_block_tables = block_tables
+                self.last_kv_cache_config = kv_cache_config
+                self.last_seq_lens = input_batch.seq_lens
+                self.last_query_start_loc = input_batch.query_start_loc
+                self.last_num_reqs = input_batch.num_reqs
+                self.last_num_draft_tokens = input_batch.num_draft_tokens
+
+        mamba_attn_metadata = MambaHybridAttnMetadata(
+            is_prefilling=is_prefilling,
+            num_accepted_tokens=num_accepted_tokens,
+            num_decode_draft_tokens_cpu=num_decode_draft_tokens_cpu,
+        )
+        return build_attn_metadata(
+            attn_groups=attn_groups,
+            num_reqs=num_reqs,
+            num_tokens=num_tokens,
+            query_start_loc_gpu=input_batch.query_start_loc,
+            query_start_loc_cpu=query_start_loc_cpu,
+            max_query_len=max_query_len,
+            seq_lens=input_batch.seq_lens,
+            max_seq_len=max_seq_len,
+            block_tables=block_tables,
+            slot_mappings=slot_mappings,
+            kv_cache_config=kv_cache_config,
+            dcp_local_seq_lens=input_batch.dcp_local_seq_lens,
+            model_specific_attn_metadata=mamba_attn_metadata,
+            for_cudagraph_capture=for_capture,
+        )
+
+    def postprocess_state(
+        self, idx_mapping: torch.Tensor, num_sampled: torch.Tensor | int
+    ) -> None:
+        # Chunked prefill does not sample a token, so num_sampled can be 0.
+        # Mamba treats num_accepted_tokens=1 as the neutral non-spec value.
+        if not isinstance(num_sampled, int):
+            # idx_mapping may contain -1 sentinels (filtered rows) under PP; the
+            # kernel skips them rather than scattering with a host-side gather.
+            num_reqs = idx_mapping.shape[0]
+            if num_reqs:
+                _scatter_num_accepted_kernel[(num_reqs,)](
+                    idx_mapping, num_sampled, self.num_accepted_tokens_gpu
+                )
+                self._copy_staging_to_committed(idx_mapping, num_sampled)
+            return
+
+        # Fill with single value.
+        self.num_accepted_tokens_gpu.index_fill_(0, idx_mapping, max(num_sampled, 1))
+
+    def _copy_staging_to_committed(
+        self, idx_mapping: torch.Tensor, num_sampled: torch.Tensor
+    ) -> None:
+        """Commit the last accepted recurrent state and preserve crossed blocks."""
+        if not self.is_spec_decode_align_mode or self.last_num_draft_tokens == 0:
+            return
+        assert self.last_block_tables is not None
+        assert self.last_kv_cache_config is not None
+        assert self.last_seq_lens is not None
+        assert self.last_query_start_loc is not None
+
+        num_reqs = min(self.last_num_reqs, idx_mapping.shape[0], num_sampled.shape[0])
+        if num_reqs == 0:
+            return
+        valid_mask = idx_mapping[:num_reqs] >= 0
+        accepted = torch.clamp(num_sampled[:num_reqs], min=1)
+        needs_copy_mask = valid_mask & (accepted > 1)
+        if not needs_copy_mask.any():
+            return
+
+        seq_lens = self.last_seq_lens[:num_reqs]
+        query_start_loc = self.last_query_start_loc[: num_reqs + 1]
+        query_lens = query_start_loc[1:] - query_start_loc[:-1]
+        num_computed_before = seq_lens - query_lens
+        num_computed_after = num_computed_before + accepted
+
+        fwd_ctx = self.vllm_config.compilation_config.static_forward_context
+        cache_mode = self.vllm_config.cache_config.mamba_cache_mode
+        num_spec_tokens = self.vllm_config.num_speculative_tokens
+        selected_commit = needs_copy_mask.nonzero(as_tuple=False).squeeze(1)
+        logger.info(
+            "MAMBA_STATE_COMMIT depth=%d idx=%s before=%s after=%s accepted=%s",
+            num_spec_tokens,
+            idx_mapping[:num_reqs][selected_commit].tolist(),
+            num_computed_before[selected_commit].tolist(),
+            num_computed_after[selected_commit].tolist(),
+            accepted[selected_commit].tolist(),
+        )
+
+        for group_index, group in enumerate(
+            self.last_kv_cache_config.kv_cache_groups
+        ):
+            if not isinstance(group.kv_cache_spec, MambaSpec):
+                continue
+
+            block_table = self.last_block_tables[group_index]
+            block_size = group.kv_cache_spec.block_size
+            state_indices = mamba_get_block_table_tensor(
+                block_table,
+                seq_lens,
+                group.kv_cache_spec,
+                cache_mode,
+            )[:num_reqs, : 1 + num_spec_tokens]
+
+            accepted_source_column = (
+                (accepted - 1)
+                .clamp(max=state_indices.size(1) - 1)
+                .to(torch.int64)
+            )
+            accepted_source_phys = state_indices.gather(
+                1, accepted_source_column.unsqueeze(1)
+            ).squeeze(1)
+
+            ssm_destination_column = torch.clamp(
+                (num_computed_after - 1) // block_size, min=0
+            ).to(torch.int64)
+            ssm_destination_phys = block_table[:num_reqs].gather(
+                1, ssm_destination_column.unsqueeze(1)
+            ).squeeze(1)
+
+            conv_destination_column = torch.clamp(
+                (num_computed_after + num_spec_tokens) // block_size, min=0
+            ).to(torch.int64)
+            conv_destination_phys = block_table[:num_reqs].gather(
+                1, conv_destination_column.unsqueeze(1)
+            ).squeeze(1)
+
+            previous_block_column = torch.clamp(
+                (num_computed_before - 1) // block_size, min=0
+            ).to(torch.int64)
+            crossed_boundary_mask = ssm_destination_column > previous_block_column
+            boundary_copy_mask = needs_copy_mask & crossed_boundary_mask
+            boundary_source_phys: torch.Tensor | None = None
+            boundary_destination_phys: torch.Tensor | None = None
+            if boundary_copy_mask.any():
+                boundary_position = (previous_block_column + 1) * block_size - 1
+                boundary_source_column = (
+                    (boundary_position - num_computed_before)
+                    .clamp(min=0, max=num_spec_tokens)
+                    .to(torch.int64)
+                )
+                boundary_source_phys = state_indices.gather(
+                    1, boundary_source_column.unsqueeze(1)
+                ).squeeze(1)
+                boundary_destination_phys = block_table[:num_reqs].gather(
+                    1, previous_block_column.unsqueeze(1)
+                ).squeeze(1)
+
+                selected = boundary_copy_mask.nonzero(as_tuple=False).squeeze(1)
+                logger.info(
+                    "MAMBA_STATE_BOUNDARY_COMMIT depth=%d block_size=%d "
+                    "before=%s after=%s accepted=%s accepted_src=%s "
+                    "ssm_dst=%s conv_dst=%s boundary_src=%s boundary_dst=%s",
+                    num_spec_tokens,
+                    block_size,
+                    num_computed_before[selected].tolist(),
+                    num_computed_after[selected].tolist(),
+                    accepted[selected].tolist(),
+                    accepted_source_phys[selected].tolist(),
+                    ssm_destination_phys[selected].tolist(),
+                    conv_destination_phys[selected].tolist(),
+                    boundary_source_phys[selected].tolist(),
+                    boundary_destination_phys[selected].tolist(),
+                )
+
+            for layer_name in group.layer_names:
+                layer = fwd_ctx[layer_name]
+                conv_state = layer.kv_cache[0]
+                ssm_state = layer.kv_cache[1]
+
+                # Preserve the state for a completed block before writing the
+                # final accepted state. The boundary source can alias either
+                # running destination at a block crossing.
+                if boundary_source_phys is not None:
+                    assert boundary_destination_phys is not None
+                    boundary_source = boundary_source_phys[boundary_copy_mask].long()
+                    boundary_destination = boundary_destination_phys[
+                        boundary_copy_mask
+                    ].long()
+                    ssm_state[boundary_destination] = ssm_state[boundary_source]
+                    conv_state[boundary_destination] = conv_state[boundary_source]
+
+                accepted_source = accepted_source_phys[needs_copy_mask].long()
+                conv_destination = conv_destination_phys[needs_copy_mask].long()
+                conv_state[conv_destination] = conv_state[accepted_source]
+                ssm_destination = ssm_destination_phys[needs_copy_mask].long()
+                ssm_state[ssm_destination] = ssm_state[accepted_source]
+
+
+@triton.jit
+def _scatter_num_accepted_kernel(
+    idx_mapping_ptr,  # [num_reqs] batch_idx -> req_state_idx (-1 to skip)
+    num_sampled_ptr,  # [num_reqs]
+    num_accepted_ptr,  # [max_num_reqs]
+):
+    row = tl.program_id(0)
+    req_state_idx = tl.load(idx_mapping_ptr + row)
+    if req_state_idx < 0:
+        return
+    num_sampled = tl.load(num_sampled_ptr + row)
+    tl.store(num_accepted_ptr + req_state_idx, tl.maximum(num_sampled, 1))

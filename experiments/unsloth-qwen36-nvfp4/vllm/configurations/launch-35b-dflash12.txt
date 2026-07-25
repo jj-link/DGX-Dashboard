@@ -1,0 +1,1 @@
+DETACH=1 PORT=8000 CONFIG=dflash NUM_SPEC=12 CONTAINER_NAME=unsloth-qwen36-vllm-35b-a3b-dflash12 /home/workbench/inference/experiments/unsloth-qwen36-nvfp4/vllm/serve-35b-a3b.sh

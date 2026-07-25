@@ -1,0 +1,9 @@
+- name: openai/qwen35-122b-a10b-nvfp4
+  edit_format: whole
+  use_repo_map: false
+  send_undo_reply: false
+  examples_as_sys_msg: true
+  streaming: true
+  extra_params:
+    max_tokens: 49152
+    temperature: 0.0

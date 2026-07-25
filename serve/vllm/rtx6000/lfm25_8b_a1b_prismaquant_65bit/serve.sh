@@ -1,0 +1,38 @@
+#!/usr/bin/env bash
+# vLLM launch for LFM2.5-8B-A1B PrismaQuant 6.5-bit.
+#
+# Normal entry point from this repo:
+# Run with `./serve.sh vllm lfm25_8b_a1b_prismaquant_65bit`.
+#
+# Model card serving requirements:
+#   vllm serve <this-dir> --quantization compressed-tensors --trust-remote-code
+#
+# The image must include vLLM support for Lfm2MoeForCausalLM plus the LFM2
+# short-conv / linear-attention kernels: causal-conv1d and flash-linear-attention.
+set -euo pipefail
+
+MODEL="${MODEL_PATH:?MODEL_PATH is required}"
+SERVED="${SERVED:?SERVED is required}"
+MAXLEN="${MAXLEN:-128000}"
+PORT=8000
+GPU_MEM_UTIL="${GPU_MEM_UTIL:-0.92}"
+
+# WSL2+Blackwell: cuMemSetAccess (VMM API) is unsupported â€” expandable_segments crashes.
+unset PYTORCH_CUDA_ALLOC_CONF
+export CUDA_DEVICE_ORDER="${CUDA_DEVICE_ORDER:-PCI_BUS_ID}"
+export CUDA_VISIBLE_DEVICES="${CUDA_VISIBLE_DEVICES:-0}"
+export VLLM_WORKER_MULTIPROC_METHOD=spawn
+
+exec vllm serve "$MODEL" \
+  --served-model-name "$SERVED" \
+  --host 0.0.0.0 --port "$PORT" \
+  --max-model-len "$MAXLEN" \
+  --gpu-memory-utilization "$GPU_MEM_UTIL" \
+  --quantization compressed-tensors \
+  --trust-remote-code \
+  --disable-custom-all-reduce \
+  --enable-chunked-prefill \
+  --enable-prefix-caching \
+  --enable-auto-tool-choice \
+  --tool-call-parser lfm2 \
+  "$@"

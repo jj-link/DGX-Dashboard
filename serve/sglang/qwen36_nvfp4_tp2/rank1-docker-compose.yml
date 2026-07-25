@@ -1,0 +1,17 @@
+services:
+  ray-worker:
+    image: rayproject/ray:2.41.0-py311
+    container_name: ray-worker
+    restart: "no"
+    network_mode: host
+    ipc: host
+    volumes:
+      - ${HOME}/models:/models
+    environment:
+      RAY_ADDRESS: "10.0.0.1:6379"
+    command:
+      - ray
+      - start
+      - --address=10.0.0.1:6379
+      - --node-ip-address=10.0.0.2
+      - --num-gpus=0

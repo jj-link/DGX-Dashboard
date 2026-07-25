@@ -1,0 +1,1 @@
+DETACH=1 PORT=8000 CONFIG=mtp NUM_SPEC=8 MAMBA_CACHE_DTYPE=bfloat16 MAMBA_SSM_CACHE_DTYPE=bfloat16 CONTAINER_NAME=unsloth-qwen36-vllm-35b-a3b-mtp8-statebf16 /home/workbench/inference/experiments/unsloth-qwen36-nvfp4/vllm/serve-35b-a3b.sh

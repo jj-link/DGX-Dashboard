@@ -1,0 +1,26 @@
+services:
+  gemma4-12b-nvfp4:
+    image: lmsysorg/sglang:v0.5.12-cu130
+    container_name: sglang-gemma4-12b-nvfp4
+    restart: "no"
+    ports:
+      - "8001:30000"
+    ipc: host
+    shm_size: 32g
+    volumes:
+      - ${HOME}/models:/models
+    environment:
+      HF_HOME: /models
+      SGLANG_ENABLE_SPEC_V2: "1"
+      SGLANG_ENABLE_JIT_DEEPGEMM: "0"
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
+    command:
+      - /bin/bash
+      - -c
+      - pip install --upgrade transformers && python3 -m sglang.launch_server --model-path AxionML/Gemma-4-12B-NVFP4 --quantization modelopt_fp4 --kv-cache-dtype fp8_e4m3 --reasoning-parser gemma4 --tool-call-parser gemma4 --mem-fraction-static 0.80 --host 0.0.0.0 --port 30000 --enable-metrics --max-running-requests 4 --cuda-graph-max-bs 8

@@ -1,0 +1,530 @@
+diff --git a/vllm/model_executor/kernels/linear/nvfp4/cutlass.py b/vllm/model_executor/kernels/linear/nvfp4/cutlass.py
+index 106e92d912..e1ae1542b4 100644
+--- a/vllm/model_executor/kernels/linear/nvfp4/cutlass.py
++++ b/vllm/model_executor/kernels/linear/nvfp4/cutlass.py
+@@ -1,8 +1,10 @@
+ # SPDX-License-Identifier: Apache-2.0
+ # SPDX-FileCopyrightText: Copyright contributors to the vLLM project
+ 
++from vllm import envs
+ import torch
+ 
++from vllm.forward_context import is_speculative_forward
+ from vllm._custom_ops import (
+     cutlass_scaled_fp4_mm,
+     scaled_fp4_quant,
+@@ -52,26 +54,41 @@ class CutlassNvFp4LinearKernel(NvFp4LinearKernel):
+         output_dtype = x.dtype
+         output_shape = [*x.shape[:-1], output_size]
+         weights_padding_bytes = getattr(layer, "weights_padding_cols", 0)
++        x_2d = x.reshape(-1, x.shape[-1])
+ 
+-        x_fp4, x_blockscale = scaled_fp4_quant(
+-            x,
+-            layer.input_global_scale_inv,
+-            is_sf_swizzled_layout=True,
+-            backend="cutlass",
+-            padded_n=x.shape[-1] + weights_padding_bytes * 2,
+-        )
++        def apply_chunk(chunk: torch.Tensor) -> torch.Tensor:
++            chunk_fp4, chunk_blockscale = scaled_fp4_quant(
++                chunk,
++                layer.input_global_scale_inv,
++                is_sf_swizzled_layout=True,
++                backend="cutlass",
++                padded_n=chunk.shape[-1] + weights_padding_bytes * 2,
++            )
++            return cutlass_scaled_fp4_mm(
++                chunk_fp4,
++                layer.weight,
++                chunk_blockscale,
++                layer.weight_scale,
++                layer.alpha,
++                output_dtype,
++            )
+ 
+-        out = cutlass_scaled_fp4_mm(
+-            x_fp4,
+-            layer.weight,
+-            x_blockscale,
+-            layer.weight_scale,
+-            layer.alpha,
+-            output_dtype,
+-        )
++        # Speculative target verification must use the same M=1
++        # quantization and GEMM path as ordinary decode. Keep prefill and
++        # non-speculative execution on their native shapes.
++        if (
++            envs.VLLM_BATCH_INVARIANT
++            and x_2d.shape[0] > 1
++            and is_speculative_forward()
++        ):
++            out = torch.cat(
++                [apply_chunk(chunk) for chunk in x_2d.split(1, dim=0)],
++                dim=0,
++            )
++        else:
++            out = apply_chunk(x_2d)
+ 
+         out = slice_nvfp4_output(out, output_size)
+-
+         if bias is not None:
+             out = out + bias
+         return out.view(*output_shape)
+diff --git a/vllm/model_executor/layers/fla/ops/fused_sigmoid_gating.py b/vllm/model_executor/layers/fla/ops/fused_sigmoid_gating.py
+index 7e0c7e05ca..744cb92c17 100644
+--- a/vllm/model_executor/layers/fla/ops/fused_sigmoid_gating.py
++++ b/vllm/model_executor/layers/fla/ops/fused_sigmoid_gating.py
+@@ -132,12 +132,24 @@ def fused_sigmoid_gating_delta_rule_update_kernel(
+         )
+         b_g = -tl.exp(tl.load(p_A_log).to(tl.float32)) * softplus_x
+ 
+-        # compute beta_output = sigmoid(b)
+-        b_beta = tl.sigmoid(b_b.to(tl.float32))
++        # Speculative verification uses the multi-token kernel, but its target
++        # math must match the packed single-token decode path exactly.
++        if IS_SPEC_DECODING:
++            b_beta = (
++                tl.sigmoid(b_b.to(tl.float32))
++                .to(b.dtype.element_ty)
++                .to(tl.float32)
++            )
++        else:
++            b_beta = tl.sigmoid(b_b.to(tl.float32))
+ 
+         if USE_QK_L2NORM_IN_KERNEL:
+-            b_q = b_q * (tl.rsqrt(tl.sum(b_q * b_q) + 1e-6))
+-            b_k = b_k * (tl.rsqrt(tl.sum(b_k * b_k) + 1e-6))
++            if IS_SPEC_DECODING:
++                b_q = b_q / tl.sqrt(tl.sum(b_q * b_q) + 1e-6)
++                b_k = b_k / tl.sqrt(tl.sum(b_k * b_k) + 1e-6)
++            else:
++                b_q = b_q * (tl.rsqrt(tl.sum(b_q * b_q) + 1e-6))
++                b_k = b_k * (tl.rsqrt(tl.sum(b_k * b_k) + 1e-6))
+         b_q = b_q * scale
+         # [BV, BK]
+         if not IS_KDA:
+@@ -205,11 +217,60 @@ def fused_sigmoid_gating_delta_rule_update(
+     B, T, H, K, V = *k.shape, v.shape[-1]
+     HV = v.shape[2]
+     N = B if cu_seqlens is None else len(cu_seqlens) - 1
+-    BK, BV = triton.next_power_of_2(K), min(triton.next_power_of_2(V), 32)
++    # Speculative verification must use the same one-token recurrence as
++    # ordinary decode. A multi-token Triton loop accumulates different FP32
++    # states even when its BF16 outputs initially round to the same values.
++    # Save every one-token state so rejection can select the exact snapshot.
++    if (
++        num_accepted_tokens is not None
++        and N == 1
++        and T > 1
++        and cu_seqlens is not None
++        and ssm_state_indices is not None
++        and inplace_final_state
++    ):
++        start_offset = (num_accepted_tokens[:1] - 1).long()
++        start_idx = torch.gather(ssm_state_indices[0], 0, start_offset)
++        running_state = torch.index_select(initial_state, 0, start_idx)
++        chunk_outputs = []
++        state_snapshots = []
++        for chunk_start in range(T):
++            chunk_end = chunk_start + 1
++            chunk_output, chunk_states = fused_sigmoid_gating_delta_rule_update(
++                A_log=A_log,
++                a=a[chunk_start:chunk_end],
++                b=b[chunk_start:chunk_end],
++                dt_bias=dt_bias,
++                q=q[:, chunk_start:chunk_end],
++                k=k[:, chunk_start:chunk_end],
++                v=v[:, chunk_start:chunk_end],
++                beta=beta,
++                threshold=threshold,
++                scale=scale,
++                initial_state=running_state,
++                inplace_final_state=False,
++                num_accepted_tokens=num_accepted_tokens[:1],
++                use_qk_l2norm_in_kernel=use_qk_l2norm_in_kernel,
++                is_kda=is_kda,
++            )
++            chunk_outputs.append(chunk_output)
++            state_snapshots.append(chunk_states)
++            running_state = chunk_states[-1:]
++
++        initial_state.index_copy_(
++            0,
++            ssm_state_indices[0, :T].long(),
++            torch.cat(state_snapshots, dim=0),
++        )
++        return torch.cat(chunk_outputs, dim=1), initial_state
++    BK = triton.next_power_of_2(K)
++    BV = min(triton.next_power_of_2(V), 16 if num_accepted_tokens is not None else 32)
+     NK, NV = triton.cdiv(K, BK), triton.cdiv(V, BV)
+     assert NK == 1, "NK > 1 is not supported yet"
+     num_stages = 3
+-    num_warps = 4
++    # Match the packed single-token decode kernel's reduction geometry during
++    # speculative verification so recurrent-state updates are bit-identical.
++    num_warps = 1 if num_accepted_tokens is not None else 4
+ 
+     if cu_seqlens is not None and q.shape[0] != 1:
+         raise ValueError(
+diff --git a/vllm/parser/qwen3.py b/vllm/parser/qwen3.py
+index f14da8234c..c9cba29779 100644
+--- a/vllm/parser/qwen3.py
++++ b/vllm/parser/qwen3.py
+@@ -54,13 +54,27 @@ _PARAM_RE = re.compile(
+ _PARTIAL_PARAM_RE = re.compile(r"<\s*parameter\s*=\s*([^>]+)>(.*)$", re.DOTALL)
+ 
+ 
++def _unwrap_parameter_value(value: str) -> str:
++    """Remove XML framing newlines without stripping argument whitespace."""
++    if value.startswith("\r\n"):
++        value = value[2:]
++    elif value.startswith("\n"):
++        value = value[1:]
++
++    if value.endswith("\r\n"):
++        value = value[:-2]
++    elif value.endswith("\n"):
++        value = value[:-1]
++    return value
++
++
+ def _qwen3_arg_converter(raw_args: str, partial: bool) -> str:
+     params: dict[str, object] = {}
+ 
+     for match in _PARAM_RE.finditer(raw_args):
+         name = match.group(1)
+         value = match.group(2)
+-        params[name] = value.strip()
++        params[name] = _unwrap_parameter_value(value)
+ 
+     if partial:
+         remaining = _PARAM_RE.sub("", raw_args)
+@@ -69,7 +83,7 @@ def _qwen3_arg_converter(raw_args: str, partial: bool) -> str:
+             name = m.group(1)
+             value = m.group(2)
+             if name:
+-                params[name] = value.strip()
++                params[name] = _unwrap_parameter_value(value)
+ 
+     return json.dumps(params, ensure_ascii=False)
+ 
+@@ -173,7 +187,10 @@ def qwen3_config(thinking: bool = True) -> ParserEngineConfig:
+             ),
+         },
+         arg_converter=_qwen3_arg_converter,
+-        stream_arg_deltas=True,
++        # XML framing normalization is not prefix-monotonic while a parameter is
++        # incomplete. Buffer until TOOL_CALL_END so SSE chunk boundaries cannot
++        # strip leading indentation or trailing newlines from string arguments.
++        stream_arg_deltas=False,
+         strip_trailing_reasoning_whitespace=False,
+         tool_args_json=False,
+     )
+diff --git a/vllm/utils/platform_utils.py b/vllm/utils/platform_utils.py
+index cc69d9a241..5b5ce38789 100644
+--- a/vllm/utils/platform_utils.py
++++ b/vllm/utils/platform_utils.py
+@@ -2,6 +2,7 @@
+ # SPDX-FileCopyrightText: Copyright contributors to the vLLM project
+ 
+ import multiprocessing
++import os
+ from collections.abc import Sequence
+ from concurrent.futures.process import ProcessPoolExecutor
+ from functools import cache
+@@ -49,6 +50,8 @@ def is_pin_memory_available() -> bool:
+ @cache
+ def is_uva_available() -> bool:
+     """Check if Unified Virtual Addressing (UVA) is available."""
++    if os.getenv("VLLM_FORCE_UVA") == "1":
++        return True
+     # UVA requires pinned memory.
+     from vllm.platforms import current_platform
+ 
+diff --git a/vllm/v1/attention/backends/mamba_attn.py b/vllm/v1/attention/backends/mamba_attn.py
+index 75292846d9..002b12a9eb 100644
+--- a/vllm/v1/attention/backends/mamba_attn.py
++++ b/vllm/v1/attention/backends/mamba_attn.py
+@@ -506,6 +506,7 @@ class BaseMambaAttentionMetadataBuilder(AttentionMetadataBuilder[M], abc.ABC):
+         if (
+             self.is_mrv2_spec_decode_align_mode
+             and num_decodes > 0
++            and num_decode_tokens > num_decodes
+             and num_accepted_tokens is not None
+         ):
+             if num_computed_tokens is None:
+diff --git a/vllm/v1/core/kv_cache_utils.py b/vllm/v1/core/kv_cache_utils.py
+index b13c23d804..d1a51074a4 100644
+--- a/vllm/v1/core/kv_cache_utils.py
++++ b/vllm/v1/core/kv_cache_utils.py
+@@ -1670,7 +1670,7 @@ def _get_kv_cache_groups_uniform_groups(
+     return [full_mla_group, *swa_mla_groups]
+ 
+ 
+-def _annotate_eagle_groups_deepseek_v4(
++def _annotate_eagle_groups(
+     vllm_config: VllmConfig,
+     kv_cache_spec: dict[str, KVCacheSpec],
+     kv_cache_groups: list[KVCacheGroupSpec],
+@@ -1678,20 +1678,16 @@ def _annotate_eagle_groups_deepseek_v4(
+     spec_config = vllm_config.speculative_config
+     if spec_config is None or not spec_config.use_eagle():
+         return
+-    # Detection uses the merged MLA spec's model_version.
+-    if not any(
+-        getattr(spec, "model_version", None) == "deepseek_v4"
+-        for spec in kv_cache_spec.values()
+-    ):
+-        return
+-    # DeepseekV4's MTP attention layer is always the last layer, and we flag whichever
+-    # group contains it.
+-    # FIXME(yifan): avoid/generalize this hacky check.
++
++    # EAGLE-family draft layers are registered after the target layers. Their
++    # last KV-cache layer contains an unverified token and is the only group
++    # that should receive the EAGLE last-block drop. Falling back to marking
++    # every group corrupts reused target-model attention state in hybrid models.
+     last_layer = next(reversed(kv_cache_spec))
+     for group in kv_cache_groups:
+         if last_layer in group.layer_names:
+             group.is_eagle_group = True
+-            break
++            return
+ 
+ 
+ def get_kv_cache_groups(
+@@ -1719,19 +1715,23 @@ def get_kv_cache_groups(
+         # KV cache of all layers are the same, which is true for
+         # most models. Allocate the same amount of memory for
+         # each layer.
+-        return _get_kv_cache_groups_uniform_spec(kv_cache_spec)
++        groups = _get_kv_cache_groups_uniform_spec(kv_cache_spec)
++        _annotate_eagle_groups(vllm_config, kv_cache_spec, groups)
++        return groups
+     elif uniform_spec := UniformTypeKVCacheSpecs.from_specs(kv_cache_spec):
+         # All layers need the same number of token slots (e.g., all layers are
+         # full attention, or all layers are sliding window attention with the
+         # same window size). Put all layers into one group.
+-        return _get_kv_cache_groups_uniform_type(uniform_spec)
++        groups = _get_kv_cache_groups_uniform_type(uniform_spec)
++        _annotate_eagle_groups(vllm_config, kv_cache_spec, groups)
++        return groups
+     elif grouped_specs := group_and_unify_kv_cache_specs(kv_cache_spec):
+         # DeepseekV4 case: All layers need the same number of token slots,
+         # yet some layers are full attention while others are sliding window
+         # attention in different sizes. Need to group layers into multiple
+         # UniformTypeKVCacheSpecs.
+         kv_cache_groups = _get_kv_cache_groups_uniform_groups(grouped_specs)
+-        _annotate_eagle_groups_deepseek_v4(vllm_config, kv_cache_spec, kv_cache_groups)
++        _annotate_eagle_groups(vllm_config, kv_cache_spec, kv_cache_groups)
+         return kv_cache_groups
+ 
+     # Pull HiddenStateCacheSpec layers out before the general multi-group
+@@ -1760,6 +1760,7 @@ def get_kv_cache_groups(
+             aligned = replace(spec, block_size=new_bs, page_size_padded=common_page)
+             groups.append(KVCacheGroupSpec([name], aligned))
+ 
++    _annotate_eagle_groups(vllm_config, kv_cache_spec, groups)
+     return groups
+ 
+ 
+diff --git a/vllm/v1/core/sched/scheduler.py b/vllm/v1/core/sched/scheduler.py
+index 90d93a110c..187728f12f 100644
+--- a/vllm/v1/core/sched/scheduler.py
++++ b/vllm/v1/core/sched/scheduler.py
+@@ -357,7 +357,7 @@ class Scheduler(SchedulerInterface):
+             block_size = self.cache_config.block_size
+             last_cache_position = request.num_tokens - request.num_tokens % block_size
+             # eagle prune
+-            if self.use_eagle:
++            if self.use_eagle and num_computed_tokens > 0:
+                 last_cache_position = max(last_cache_position - block_size, 0)
+             num_computed_tokens_after_sched = num_computed_tokens + num_new_tokens
+             if num_computed_tokens_after_sched < last_cache_position:
+diff --git a/vllm/v1/worker/gpu/model_runner.py b/vllm/v1/worker/gpu/model_runner.py
+index 9c2e605ed3..015aabc91f 100644
+--- a/vllm/v1/worker/gpu/model_runner.py
++++ b/vllm/v1/worker/gpu/model_runner.py
+@@ -19,6 +19,7 @@ instead of embedding feature-specific logic directly.
+ 
+ import functools
+ import gc
++import os
+ import time
+ from copy import deepcopy
+ from typing import Any, NamedTuple
+@@ -1070,6 +1071,7 @@ class GPUModelRunner(LoRAModelRunnerMixin):
+ 
+     def postprocess_sampled(
+         self,
++        input_batch: InputBatch,
+         idx_mapping: torch.Tensor,  # May include -1 for masked entries
+         sampled_tokens: torch.Tensor,
+         num_sampled: torch.Tensor,
+@@ -1094,6 +1096,27 @@ class GPUModelRunner(LoRAModelRunnerMixin):
+             self.req_states.all_token_ids.gpu,
+             self.req_states.total_len.gpu,
+         )
++        if os.getenv("VLLM_TRACE_SPEC_ACCEPTANCE"):
++            torch.cuda.synchronize()
++            print(
++                "SPEC_ACCEPT_TRACE",
++                {
++                    "sampled": sampled_tokens.cpu().tolist(),
++                    "num_sampled": num_sampled.cpu().tolist(),
++                    "num_rejected": num_rejected.cpu().tolist(),
++                    "query_start_loc": (
++                        None
++                        if query_start_loc is None
++                        else query_start_loc.cpu().tolist()
++                    ),
++                    "num_computed_tokens": self.req_states.num_computed_tokens.gpu[
++                        idx_mapping
++                    ]
++                    .cpu()
++                    .tolist(),
++                },
++                flush=True,
++            )
+ 
+         self.model_state.postprocess_state(
+             input_batch, num_sampled, self.req_states.num_computed_tokens.gpu
+@@ -1162,6 +1185,12 @@ class GPUModelRunner(LoRAModelRunnerMixin):
+             # Prepare all the inputs and copy to the input buffers.
+             input_batch = self.prepare_inputs(scheduler_output, batch_desc)
+             block_tables, slot_mappings = self.prepare_attn(input_batch)
++            self.model_state.preprocess_state(
++                input_batch,
++                block_tables,
++                self.kv_cache_config,
++                self.req_states.num_computed_tokens.gpu,
++            )
+ 
+             if self.lora_config:
+                 # Activate LoRA adapters.
+@@ -1423,6 +1452,7 @@ class GPUModelRunner(LoRAModelRunnerMixin):
+         # This sequencing may slightly reduce latency as async D2H copy does not
+         # need to wait for the postprocess to finish.
+         self.postprocess_sampled(
++            input_batch,
+             input_batch.idx_mapping,
+             sampler_output.sampled_token_ids,
+             num_sampled,
+diff --git a/vllm/v1/worker/gpu/model_states/interface.py b/vllm/v1/worker/gpu/model_states/interface.py
+index 4fd55ae205..4a449cd454 100644
+--- a/vllm/v1/worker/gpu/model_states/interface.py
++++ b/vllm/v1/worker/gpu/model_states/interface.py
+@@ -75,6 +75,15 @@ class ModelState(ABC):
+     def apply_staged_writes(self) -> None:
+         return None
+ 
++    def preprocess_state(
++        self,
++        input_batch: InputBatch,
++        block_tables: tuple[torch.Tensor, ...],
++        kv_cache_config: KVCacheConfig,
++        num_computed_tokens: torch.Tensor,
++    ) -> None:
++        return None
++
+     def postprocess_state(
+         self,
+         input_batch: InputBatch,
+diff --git a/vllm/v1/worker/gpu/model_states/mamba_hybrid.py b/vllm/v1/worker/gpu/model_states/mamba_hybrid.py
+index a510a9122e..f33cc4f2c8 100644
+--- a/vllm/v1/worker/gpu/model_states/mamba_hybrid.py
++++ b/vllm/v1/worker/gpu/model_states/mamba_hybrid.py
+@@ -187,7 +187,7 @@ class MambaHybridModelState(DefaultModelState):
+         the conv & SSM state must be copied to the completed blocks so that
+         future prefix cache hits read correct state.
+         """
+-        if not self.is_spec_decode_align_mode:
++        if not self.is_spec_decode_align_mode or input_batch.num_draft_tokens == 0:
+             return
+ 
+         assert self.last_kv_cache_config is not None
+@@ -277,19 +277,21 @@ class MambaHybridModelState(DefaultModelState):
+                 # NOTE: Will NOT work for all models, only Mamba1, Mamba2, and GDN.
+                 conv_state = layer.kv_cache[0]
+                 ssm_state = layer.kv_cache[1]
+-                src_idx = src_phys[needs_copy_mask].long()
+-                # Copy conv state.
+-                conv_dst_idx = conv_dst_phys[needs_copy_mask].long()
+-                conv_state[conv_dst_idx] = conv_state[src_idx]
+-                # Copy SSM state.
+-                ssm_dst_idx = ssm_dst_phys[needs_copy_mask].long()
+-                ssm_state[ssm_dst_idx] = ssm_state[src_idx]
+ 
+-                # If any boundary crossings occurred, conv & SSM state need to be
+-                # copied to the completed blocks for prefix caching.
++                # Preserve a completed boundary before the destination block is
++                # overwritten with the final accepted state. At a crossing,
++                # boundary_src_phys can alias ssm_dst_phys/conv_dst_phys.
+                 if boundary_src_phys is not None:
+                     assert boundary_dst_phys is not None
+                     bsrc = boundary_src_phys[needs_boundary_copy_mask].long()
+                     bdst = boundary_dst_phys[needs_boundary_copy_mask].long()
+                     ssm_state[bdst] = ssm_state[bsrc]
+                     conv_state[bdst] = conv_state[bsrc]
++
++                src_idx = src_phys[needs_copy_mask].long()
++                # Copy conv state.
++                conv_dst_idx = conv_dst_phys[needs_copy_mask].long()
++                conv_state[conv_dst_idx] = conv_state[src_idx]
++                # Copy SSM state.
++                ssm_dst_idx = ssm_dst_phys[needs_copy_mask].long()
++                ssm_state[ssm_dst_idx] = ssm_state[src_idx]
+diff --git a/vllm/v1/worker/gpu_model_runner.py b/vllm/v1/worker/gpu_model_runner.py
+index 74938a823d..4c8e1d2bce 100644
+--- a/vllm/v1/worker/gpu_model_runner.py
++++ b/vllm/v1/worker/gpu_model_runner.py
+@@ -4,6 +4,7 @@
+ import functools
+ import gc
+ import itertools
++import os
+ import threading
+ import time
+ from collections import defaultdict
+@@ -1513,6 +1514,20 @@ class GPUModelRunner(
+         # tokens gives us the first -1 position (i.e., number of accepted).
+         num_reqs = output_token_ids.size(0)
+         self.num_accepted_tokens.gpu[:num_reqs] = (output_token_ids != -1).sum(dim=1)
++        if os.getenv("VLLM_TRACE_SPEC_ACCEPTANCE"):
++            torch.cuda.synchronize()
++            print(
++                "SPEC_OUTPUT_TRACE",
++                {
++                    "output_token_ids": output_token_ids.cpu().tolist(),
++                    "num_accepted_tokens": self.num_accepted_tokens.gpu[
++                        :num_reqs
++                    ]
++                    .cpu()
++                    .tolist(),
++                },
++                flush=True,
++            )
+ 
+         if self.cache_config.mamba_cache_mode == "align":
+             # Fused GPU postprocess: state copies + per-request accepted-token
+@@ -2063,6 +2078,19 @@ class GPUModelRunner(
+                 )
+             self.num_accepted_tokens.np[num_reqs:].fill(1)
+             self.num_accepted_tokens.copy_to_gpu()
++            if os.getenv("VLLM_TRACE_SPEC_ACCEPTANCE"):
++                print(
++                    "SPEC_INPUT_TRACE",
++                    {
++                        "num_accepted_tokens": self.num_accepted_tokens.np[
++                            :num_reqs
++                        ].tolist(),
++                        "num_computed_tokens": self.input_batch.num_computed_tokens_cpu[
++                            :num_reqs
++                        ].tolist(),
++                    },
++                    flush=True,
++                )
+         else:
+             # Default to 1; update_num_computed_tokens_for_batch_change below
+             # corrects rows that had drafts from valid_sampled_token_count.

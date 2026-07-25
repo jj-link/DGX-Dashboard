@@ -1,0 +1,4 @@
+6083fd9c166fa347ab96ed98613f72f8502e35dfe3721becf4e4ddb5431005f5  vllm/envs.py
+6b2e4635cec71d247b8e67a2fb816a087823018b0a5685a23063d6be7fa0ebad  vllm/model_executor/kernels/linear/__init__.py
+cb3280b0620f246b8be5763424c5c205ab38556c93e14e9e8f51c7222c01f117  vllm/model_executor/kernels/linear/nvfp4/flashinfer.py
+1a2b591977a1dafc5dad8efd98c97f2ca7f08e1178ce8aa11c24acd4db870e59  vllm/utils/flashinfer.py

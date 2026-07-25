@@ -1,0 +1,1 @@
+DETACH=1 PORT=8000 CONFIG=dflash NUM_SPEC=15 DRAFT_WINDOW=6144 LINEAR_ATTN_PREFILL_BACKEND=triton LINEAR_ATTN_DECODE_BACKEND=flashinfer MAMBA_SSM_DTYPE=bfloat16 CONTAINER_NAME=unsloth-qwen36-sglang-35b-a3b-dflash15-w6144 /home/workbench/inference/experiments/unsloth-qwen36-nvfp4/sglang/serve-35b-a3b.sh

@@ -1,0 +1,41 @@
+{
+  "source": "nvidia/Qwen3.6-27B-NVFP4 config.json and captured DFlash decode profile",
+  "model": {
+    "hidden_size": 5120,
+    "intermediate_size": 17408,
+    "head_dim": 256,
+    "attention_heads": 24,
+    "kv_heads": 4,
+    "linear_key_heads": 16,
+    "linear_key_head_dim": 128,
+    "linear_value_heads": 48,
+    "linear_value_head_dim": 128,
+    "layers": 64,
+    "full_attention_interval": 4,
+    "vocab_size": 248320
+  },
+  "dflash_decode": {
+    "num_speculative_tokens": 12,
+    "target_verification_m": 13,
+    "profile_evidence": "execute_context_0 generation_1(13)",
+    "deterministic_baseline_drafts": 1347,
+    "deterministic_baseline_accepted_tokens": 2748
+  },
+  "nvfp4_shapes": [
+    {"module": "mlp.gate_proj", "M": 13, "N": 17408, "K": 5120},
+    {"module": "mlp.up_proj", "M": 13, "N": 17408, "K": 5120},
+    {"module": "mlp.down_proj", "M": 13, "N": 5120, "K": 17408},
+    {"module": "lm_head", "M": 13, "N": 248320, "K": 5120}
+  ],
+  "fp8_full_attention_shapes": [
+    {"module": "self_attn.q_proj", "M": 13, "N": 12288, "K": 5120, "note": "Q plus output gate"},
+    {"module": "self_attn.k_proj", "M": 13, "N": 1024, "K": 5120},
+    {"module": "self_attn.v_proj", "M": 13, "N": 1024, "K": 5120},
+    {"module": "self_attn.o_proj", "M": 13, "N": 5120, "K": 6144}
+  ],
+  "fp8_linear_attention_shapes": [
+    {"module": "linear_attn.in_proj_qkv", "M": 13, "N": 10240, "K": 5120, "note": "16x128 key/query plus 48x128 value"},
+    {"module": "linear_attn.in_proj_z", "M": 13, "N": 6144, "K": 5120},
+    {"module": "linear_attn.out_proj", "M": 13, "N": 5120, "K": 6144}
+  ]
+}

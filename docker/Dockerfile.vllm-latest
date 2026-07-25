@@ -1,0 +1,26 @@
+# Latest vLLM (0.21.0) image for the SPARK (DGX Spark GB10, aarch64,
+# Blackwell SM121, CUDA 13). Same precompiled-overlay pattern as
+# Dockerfile.dflash, but on the spark's NGC base (not the local-only
+# qwen-vllm:pinned) and targeting the latest vLLM release.
+#
+# Why FROM the NGC base + VLLM_USE_PRECOMPILED=1:
+#   The NGC 26.03.post1 base carries the GB10-correct CUDA 13 / SM121
+#   compiled kernels + torch. The runtime base lacks the full CUDA dev
+#   toolkit, so a from-source C++20 compile of vLLM 0.21 is impractical
+#   here. VLLM_USE_PRECOMPILED=1 pulls vLLM's prebuilt CUDA extensions and
+#   overlays only the 0.21.0 Python sources — the proven approach on this
+#   exact box (vllm-dflash:pr40898 was built the same way and runs).
+FROM nvcr.io/nvidia/vllm:26.03.post1-py3
+
+ENV VLLM_USE_PRECOMPILED=1
+
+RUN apt-get update && apt-get install -y --no-install-recommends git \
+    && rm -rf /var/lib/apt/lists/*
+
+# vLLM 0.21.0 (latest release as of 2026-05-15).
+RUN pip install --no-cache-dir -U --break-system-packages \
+      "vllm @ git+https://github.com/vllm-project/vllm.git@v0.21.0"
+
+# Ensure transformers is new enough for current model archs (e.g. gemma4
+# needs >=5.5.0); the dflash build settled on 5.8.1 via this path.
+RUN pip install --no-cache-dir -U --break-system-packages "transformers>=5.5"

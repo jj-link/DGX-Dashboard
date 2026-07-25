@@ -1,0 +1,160 @@
+--- a/vllm/envs.py
++++ b/vllm/envs.py
+@@ -1496,6 +1496,7 @@
+         int(os.getenv("VLLM_HAS_FLASHINFER_CUBIN", "0"))
+     ),
+     # Supported options:
++    # - "flashinfer-b12x": use FlashInfer b12x CuTe DSL GEMM on SM120/SM121
+     # - "flashinfer-cudnn": use flashinfer cudnn GEMM backend
+     # - "flashinfer-trtllm": use flashinfer trtllm GEMM backend
+     # - "flashinfer-cutlass": use flashinfer cutlass GEMM backend
+@@ -1509,6 +1510,7 @@
+         "VLLM_NVFP4_GEMM_BACKEND",
+         None,
+         [
++            "flashinfer-b12x",
+             "flashinfer-cudnn",
+             "flashinfer-trtllm",
+             "flashinfer-cutlass",
+--- a/vllm/model_executor/kernels/linear/__init__.py
++++ b/vllm/model_executor/kernels/linear/__init__.py
+@@ -88,6 +88,7 @@
+     FbgemmNvFp4LinearKernel,
+ )
+ from vllm.model_executor.kernels.linear.nvfp4.flashinfer import (
++    FlashInferB12xNvFp4LinearKernel,
+     FlashInferCudnnNvFp4LinearKernel,
+     FlashInferCutlassNvFp4LinearKernel,
+     FlashInferTrtllmNvFp4LinearKernel,
+@@ -607,6 +608,7 @@
+ 
+ # Maps VLLM_NVFP4_GEMM_BACKEND env var values to kernel classes.
+ _NVFP4_BACKEND_TO_KERNEL: dict[str, type[NvFp4LinearKernel]] = {
++    "flashinfer-b12x": FlashInferB12xNvFp4LinearKernel,
+     "flashinfer-cutlass": FlashInferCutlassNvFp4LinearKernel,
+     "cutlass": CutlassNvFp4LinearKernel,
+     "marlin": MarlinNvFp4LinearKernel,
+@@ -784,6 +786,7 @@
+     "CutlassNvFp4LinearKernel",
+     "EmulationNvFp4LinearKernel",
+     "FbgemmNvFp4LinearKernel",
++    "FlashInferB12xNvFp4LinearKernel",
+     "FlashInferCutlassNvFp4LinearKernel",
+     "FlashInferTrtllmNvFp4LinearKernel",
+     "FlashInferCudnnNvFp4LinearKernel",
+--- a/vllm/model_executor/kernels/linear/nvfp4/flashinfer.py
++++ b/vllm/model_executor/kernels/linear/nvfp4/flashinfer.py
+@@ -11,7 +11,11 @@
+     swizzle_blockscale,
+ )
+ from vllm.platforms import current_platform
+-from vllm.utils.flashinfer import flashinfer_scaled_fp4_mm, has_flashinfer
++from vllm.utils.flashinfer import (
++    flashinfer_scaled_fp4_mm,
++    has_flashinfer,
++    has_flashinfer_b12x_gemm,
++)
+ 
+ from .base import NvFp4LinearKernel, NvFp4LinearLayerConfig
+ 
+@@ -216,3 +220,72 @@
+         if bias is not None:
+             out = out + bias
+         return out.view(*output_shape)
++
++
++class FlashInferB12xNvFp4LinearKernel(NvFp4LinearKernel):
++    """NVFP4 GEMM via FlashInfer's b12x CuTe DSL SM120/SM121 kernel."""
++
++    @classmethod
++    def is_supported(
++        cls, compute_capability: int | None = None
++    ) -> tuple[bool, str | None]:
++        if (
++            current_platform.is_device_capability_family(120)
++            and has_flashinfer_b12x_gemm()
++        ):
++            return True, None
++        return (
++            False,
++            "FlashInfer b12x requires SM120/SM121 and FlashInfer "
++            "with Sm120B12xBlockScaledDenseGemmKernel",
++        )
++
++    @classmethod
++    def can_implement(cls, config: NvFp4LinearLayerConfig) -> tuple[bool, str | None]:
++        return True, None
++
++    def process_weights_after_loading(self, layer: torch.nn.Module) -> None:
++        # b12x consumes the same 128x4 scale-factor layout and K padding as
++        # FlashInfer CUTLASS, but dispatches mm_fp4 with backend="b12x".
++        layer.weight_scale = torch.nn.Parameter(
++            swizzle_blockscale(layer.weight_scale.data), requires_grad=False
++        )
++        padded_weight, weights_padding_cols = pad_nvfp4_weight_for_cutlass(
++            layer.weight.data
++        )
++        layer.weight = torch.nn.Parameter(padded_weight, requires_grad=False)
++        layer.weights_padding_cols = weights_padding_cols
++
++    def apply_weights(
++        self,
++        layer: torch.nn.Module,
++        x: torch.Tensor,
++        bias: torch.Tensor | None = None,
++    ) -> torch.Tensor:
++        output_size = layer.output_size_per_partition
++        output_shape = [*x.shape[:-1], output_size]
++
++        x_fp4, x_blockscale = scaled_fp4_quant(
++            x,
++            layer.input_global_scale_inv,
++            is_sf_swizzled_layout=True,
++            backend="b12x",
++        )
++        x_fp4 = pad_nvfp4_activation_for_cutlass(
++            x_fp4, getattr(layer, "weights_padding_cols", 0)
++        )
++
++        out = flashinfer_scaled_fp4_mm(
++            x_fp4,
++            layer.weight,
++            x_blockscale,
++            layer.weight_scale,
++            layer.alpha,
++            x.dtype,
++            backend="b12x",
++        )
++        out = slice_nvfp4_output(out, output_size)
++
++        if bias is not None:
++            out = out + bias
++        return out.view(*output_shape)
+--- a/vllm/utils/flashinfer.py
++++ b/vllm/utils/flashinfer.py
+@@ -266,6 +266,17 @@
+     return mod is not None and hasattr(mod, "cute_dsl_fused_moe_nvfp4")
+ 
+ 
++@functools.cache
++def has_flashinfer_b12x_gemm() -> bool:
++    """Return whether FlashInfer's SM120/SM121 b12x FP4 GEMM is installed."""
++    if not has_flashinfer_cutedsl():
++        return False
++    mod = _get_submodule("flashinfer.gemm")
++    return mod is not None and hasattr(
++        mod, "Sm120B12xBlockScaledDenseGemmKernel"
++    )
++
++
+ @functools.cache
+ def has_nvidia_artifactory() -> bool:
+     """Return `True` if NVIDIA's artifactory is accessible.
+@@ -899,6 +910,7 @@
+     "has_flashinfer_cutlass_fused_moe",
+     "has_flashinfer_cutedsl_grouped_gemm_nt_masked",
+     "has_flashinfer_cutedsl_moe_nvfp4",
++    "has_flashinfer_b12x_gemm",
+     "has_flashinfer_fp8_blockscale_gemm",
+     "has_nvidia_artifactory",
+     "supports_trtllm_attention",

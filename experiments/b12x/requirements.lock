@@ -1,0 +1,13 @@
+# Python 3.12 / Linux x86_64. Every artifact is immutable by URL and SHA-256.
+flashinfer-python @ https://files.pythonhosted.org/packages/f2/8f/b101913cb2b3687654f56681cfe9836d447526be663c149966470ef70531/flashinfer_python-0.6.14-py3-none-any.whl \
+    --hash=sha256:d124369346a3d48eac67e31c42f7a3c813bcc0abc10e2e36db413b7b3dfd97df
+flashinfer-cubin @ https://github.com/flashinfer-ai/flashinfer/releases/download/v0.6.14/flashinfer_cubin-0.6.14-py3-none-any.whl \
+    --hash=sha256:7bbed9f3851b59f3f6f6cb344810775bbce8a1c012ecf9a502bebd91cfb6433e
+flashinfer-jit-cache @ https://github.com/flashinfer-ai/flashinfer/releases/download/v0.6.14/flashinfer_jit_cache-0.6.14%2Bcu130-cp39-abi3-manylinux_2_28_x86_64.whl \
+    --hash=sha256:22b666dffe4cca7de0ea67668c16c0be819e8a67cdb34c404cf89abeb3d2b510
+nvidia-cutlass-dsl @ https://files.pythonhosted.org/packages/70/06/44d3a19b0cac377c6194f5ba3f06dc1fadeaa74dacf3ebbe157aa02c013a/nvidia_cutlass_dsl-4.5.1-py3-none-any.whl \
+    --hash=sha256:b8459948936ac935ad146f4abc78726e0f07012de5dffe39b0845c8c477a6c08
+nvidia-cutlass-dsl-libs-base @ https://files.pythonhosted.org/packages/d6/ba/f8c3f7db3de25be75e13527cd88a3019f0036370c9769ceefd1cf8165c76/nvidia_cutlass_dsl_libs_base-4.5.1-cp312-cp312-manylinux_2_28_x86_64.whl \
+    --hash=sha256:527cb8b4025b34b39c11ec6d7bfe065c82f4051aafec9d038d43dcaaeb853c22
+nvidia-cutlass-dsl-libs-cu13 @ https://files.pythonhosted.org/packages/e0/64/9d177e852192797bab0ecc7e9455a9c512c2c2b4b472da112cfeece00500/nvidia_cutlass_dsl_libs_cu13-4.5.1-cp312-cp312-manylinux_2_28_x86_64.whl \
+    --hash=sha256:f3299506a36be561d77e23fe15dcf9cdb9535933e41e29fdba29238deb3cab4f

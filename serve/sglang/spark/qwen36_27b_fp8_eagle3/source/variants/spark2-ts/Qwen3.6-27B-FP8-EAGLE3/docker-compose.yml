@@ -1,0 +1,47 @@
+services:
+  qwen36-27b-fp8-eagle3:
+    image: lmsysorg/sglang:v0.5.12-cu130
+    container_name: sglang-qwen36-27b-fp8-eagle3
+    restart: "no"
+    ports:
+      - "8001:30000"
+    ipc: host
+    shm_size: 32g
+    volumes:
+      - ${HOME}/models:/models
+      - ${HOME}/inference-eagle3/serve/sglang/patch_sglang_eagle3.py:/tmp/patch_sglang_eagle3.py:ro
+    environment:
+      HF_TOKEN: ${HF_TOKEN}
+      HF_HOME: /models
+      SGLANG_ENABLE_SPEC_V2: "1"
+      SGLANG_ENABLE_JIT_DEEPGEMM: "0"
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
+    entrypoint: ["/bin/bash", "-c"]
+    command:
+      - python3 /tmp/patch_sglang_eagle3.py && exec python3 -m sglang.launch_server
+        --model-path /models/hub/models--Qwen--Qwen3.6-27B-FP8/snapshots/e89b16ebf1988b3d6befa7de50abc2d76f26eb09
+        --host 0.0.0.0 --port 30000
+        --served-model-name Qwen3.6-27B-FP8-EAGLE3
+        --trust-remote-code
+        --tp-size 1
+        --attention-backend flashinfer
+        --context-length 262144
+        --speculative-algorithm EAGLE3
+        --speculative-draft-model-path /models/hub/ex0bit-eagle3-compressed
+        --speculative-num-steps 3
+        --speculative-eagle-topk ${TOPK:-1}
+        --speculative-num-draft-tokens ${NUM_SPEC:-4}
+        --mamba-scheduler-strategy extra_buffer
+        --tool-call-parser qwen3_coder
+        --reasoning-parser qwen3
+        --mem-fraction-static 0.85
+        --enable-metrics
+        --max-running-requests
+      - --chunked-prefill-size
+      - "2048" 2

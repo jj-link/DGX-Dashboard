@@ -1,0 +1,52 @@
+#!/usr/bin/env bash
+set -euo pipefail
+cd "$(dirname "$0")"
+source ./env.sh
+
+run_container() {
+  local HOST="$1" IP="$2"
+  echo "=== starting container on $HOST ($IP) ==="
+  ssh "$HOST" "docker rm -f $CONTAINER >/dev/null 2>&1 || true; docker rm -f vllm_qwen36_tp2 >/dev/null 2>&1 || true"
+  ssh "$HOST" "docker run -d \
+    --name $CONTAINER \
+    --entrypoint /bin/bash \
+    --privileged \
+    --gpus all \
+    --network host \
+    --ipc host \
+    --shm-size 16g \
+    --ulimit memlock=-1 \
+    --ulimit stack=67108864 \
+    --device=/dev/infiniband:/dev/infiniband \
+    -e NCCL_NET=$NCCL_NET \
+    -e NCCL_IB_DISABLE=$NCCL_IB_DISABLE \
+    -e NCCL_IB_HCA=$NCCL_IB_HCA \
+    -e NCCL_SOCKET_IFNAME=$NCCL_SOCKET_IFNAME \
+    -e GLOO_SOCKET_IFNAME=$GLOO_SOCKET_IFNAME \
+    -e TP_SOCKET_IFNAME=$TP_SOCKET_IFNAME \
+    -e NCCL_IB_GID_INDEX=$NCCL_IB_GID_INDEX \
+    -e NCCL_CROSS_NIC=$NCCL_CROSS_NIC \
+    -e NCCL_CUMEM_ENABLE=$NCCL_CUMEM_ENABLE \
+    -e NCCL_NVLS_ENABLE=$NCCL_NVLS_ENABLE \
+    -e NCCL_NET_GDR_LEVEL=$NCCL_NET_GDR_LEVEL \
+    -e NCCL_SOCKET_FAMILY=$NCCL_SOCKET_FAMILY \
+    -e PYTORCH_CUDA_ALLOC_CONF=$PYTORCH_CUDA_ALLOC_CONF \
+    -e RAY_memory_monitor_refresh_ms=$RAY_memory_monitor_refresh_ms \
+    -e RAY_TMPDIR=$RAY_TMPDIR \
+    -e VLLM_ALLOW_LONG_MAX_MODEL_LEN=$VLLM_ALLOW_LONG_MAX_MODEL_LEN \
+    -e VLLM_USE_RAY_V2_EXECUTOR_BACKEND=$VLLM_USE_RAY_V2_EXECUTOR_BACKEND \
+    -e VLLM_USE_RAY_COMPILED_DAG_OVERLAP_COMM=$VLLM_USE_RAY_COMPILED_DAG_OVERLAP_COMM \
+    -e HF_HOME=$HF_HOME \
+    -e HF_HUB_OFFLINE=$HF_HUB_OFFLINE \
+    -e TRANSFORMERS_OFFLINE=$TRANSFORMERS_OFFLINE \
+    -e VLLM_HOST_IP=$IP \
+    -v $HOST_MODELS_ROOT:/models/hub:ro \
+    -v $RECIPE_DIR:/workspace/recipe \
+    $IMAGE -lc sleep infinity" >/dev/null
+}
+
+run_container "$HEAD_HOST" "$HEAD_IP"
+run_container "$WORKER_HOST" "$WORKER_IP"
+
+echo "=== starting Ray head ==="
+ssh "$HEAD_HOST" "docker exec $CONTAINER bash -lc 

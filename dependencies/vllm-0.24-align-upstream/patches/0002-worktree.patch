@@ -1,0 +1,2081 @@
+diff --git a/tests/v1/cudagraph/test_cudagraph_dispatch.py b/tests/v1/cudagraph/test_cudagraph_dispatch.py
+index c10835821f..525c1c913d 100644
+--- a/tests/v1/cudagraph/test_cudagraph_dispatch.py
++++ b/tests/v1/cudagraph/test_cudagraph_dispatch.py
+@@ -205,6 +205,34 @@ class TestCudagraphDispatcher:
+         assert rt_mode == CUDAGraphMode.NONE
+         assert key == BatchDescriptor(num_tokens=8)
+ 
++    def test_dynamic_speculative_query_lengths_use_full_graphs(self):
++        comp_config = CompilationConfig(
++            cudagraph_mode="FULL_DECODE_ONLY",
++            mode=CompilationMode.NONE,
++            cudagraph_capture_sizes=[3, 10, 20, 30],
++        )
++        config = _create_vllm_config(comp_config, max_num_seqs=3)
++        config.num_speculative_tokens = 9
++        dispatcher = CudagraphDispatcher(config)
++        dispatcher.initialize_cudagraph_keys(
++            cudagraph_mode=comp_config.cudagraph_mode,
++            uniform_decode_query_len=10,
++            additional_uniform_decode_query_lens=[3],
++        )
++
++        runtime_mode, batch_desc = dispatcher.dispatch(
++            num_tokens=3,
++            uniform_decode=True,
++            uniform_decode_query_len=3,
++        )
++
++        assert runtime_mode == CUDAGraphMode.FULL
++        assert batch_desc == BatchDescriptor(
++            num_tokens=3,
++            num_reqs=1,
++            uniform=True,
++        )
++
+     @pytest.mark.parametrize(
+         "cudagraph_mode_str,compilation_mode,expected_modes",
+         [
+diff --git a/vllm/config/compilation.py b/vllm/config/compilation.py
+index bc38ec6a8a..ea0f1627f2 100644
+--- a/vllm/config/compilation.py
++++ b/vllm/config/compilation.py
+@@ -751,6 +751,8 @@ class CompilationConfig:
+         "vllm::linear_attention",
+         "vllm::plamo2_mamba_mixer",
+         "vllm::qwen_gdn_attention_core",
++        "vllm::qwen3_next_model_forward",
++        "vllm::qwen3_next_model_forward_aux5",
+         "vllm::gdn_attention_core_xpu",
+         "vllm::olmo_hybrid_gdn_full_forward",
+         "vllm::kda_attention",
+diff --git a/vllm/forward_context.py b/vllm/forward_context.py
+index 5527ec13b0..ff7316858a 100644
+--- a/vllm/forward_context.py
++++ b/vllm/forward_context.py
+@@ -201,6 +201,27 @@ def is_forward_context_available() -> bool:
+     return _forward_context is not None
+ 
+ 
++def is_speculative_forward() -> bool:
++    """Return whether the active model call verifies speculative tokens."""
++    if _forward_context is None:
++        return False
++
++    cache_key = "_is_speculative_forward"
++    cached = _forward_context.additional_kwargs.get(cache_key)
++    if cached is not None:
++        return bool(cached)
++
++    raw_metadata = _forward_context.attn_metadata
++    metadata_maps = raw_metadata if isinstance(raw_metadata, list) else [raw_metadata]
++    speculative = any(
++        getattr(metadata, "spec_sequence_masks", None) is not None
++        for metadata_map in metadata_maps
++        if isinstance(metadata_map, dict)
++        for metadata in metadata_map.values()
++    )
++    _forward_context.additional_kwargs[cache_key] = speculative
++    return speculative
++
+ def create_forward_context(
+     attn_metadata: Any,
+     vllm_config: VllmConfig,
+diff --git a/vllm/model_executor/kernels/linear/nvfp4/cutlass.py b/vllm/model_executor/kernels/linear/nvfp4/cutlass.py
+index 106e92d912..749a683bb4 100644
+--- a/vllm/model_executor/kernels/linear/nvfp4/cutlass.py
++++ b/vllm/model_executor/kernels/linear/nvfp4/cutlass.py
+@@ -3,6 +3,9 @@
+ 
+ import torch
+ 
++from vllm import envs
++from vllm.forward_context import is_speculative_forward
++
+ from vllm._custom_ops import (
+     cutlass_scaled_fp4_mm,
+     scaled_fp4_quant,
+@@ -17,6 +20,8 @@ from vllm.model_executor.layers.quantization.utils.nvfp4_utils import (
+ from .base import NvFp4LinearKernel, NvFp4LinearLayerConfig
+ 
+ 
++
++
+ class CutlassNvFp4LinearKernel(NvFp4LinearKernel):
+     """NVFP4 GEMM via the vLLM CUTLASS kernel."""
+ 
+@@ -51,24 +56,36 @@ class CutlassNvFp4LinearKernel(NvFp4LinearKernel):
+         output_size = layer.output_size_per_partition
+         output_dtype = x.dtype
+         output_shape = [*x.shape[:-1], output_size]
++        x_2d = x.reshape(-1, x.shape[-1])
+         weights_padding_bytes = getattr(layer, "weights_padding_cols", 0)
+ 
+-        x_fp4, x_blockscale = scaled_fp4_quant(
+-            x,
+-            layer.input_global_scale_inv,
+-            is_sf_swizzled_layout=True,
+-            backend="cutlass",
+-            padded_n=x.shape[-1] + weights_padding_bytes * 2,
+-        )
++        def apply_chunk(chunk: torch.Tensor) -> torch.Tensor:
++            chunk_fp4, chunk_blockscale = scaled_fp4_quant(
++                chunk,
++                layer.input_global_scale_inv,
++                is_sf_swizzled_layout=True,
++                backend="cutlass",
++                padded_n=chunk.shape[-1] + weights_padding_bytes * 2,
++            )
++            return cutlass_scaled_fp4_mm(
++                chunk_fp4,
++                layer.weight,
++                chunk_blockscale,
++                layer.weight_scale,
++                layer.alpha,
++                output_dtype,
++            )
+ 
+-        out = cutlass_scaled_fp4_mm(
+-            x_fp4,
+-            layer.weight,
+-            x_blockscale,
+-            layer.weight_scale,
+-            layer.alpha,
+-            output_dtype,
+-        )
++        if envs.VLLM_BATCH_INVARIANT and is_speculative_forward():
++            num_rows = x_2d.shape[0]
++            padded_rows = (num_rows + 31) // 32 * 32
++            if padded_rows != num_rows:
++                padded_x = x_2d.new_zeros((padded_rows, x_2d.shape[-1]))
++                padded_x[:num_rows].copy_(x_2d)
++                x_2d = padded_x
++            out = apply_chunk(x_2d)[:num_rows]
++        else:
++            out = apply_chunk(x_2d)
+ 
+         out = slice_nvfp4_output(out, output_size)
+ 
+diff --git a/vllm/model_executor/layers/fla/ops/fused_recurrent.py b/vllm/model_executor/layers/fla/ops/fused_recurrent.py
+index 920efa4441..5d5d610e6b 100644
+--- a/vllm/model_executor/layers/fla/ops/fused_recurrent.py
++++ b/vllm/model_executor/layers/fla/ops/fused_recurrent.py
+@@ -263,6 +263,7 @@ def fused_recurrent_gated_delta_rule_packed_decode_kernel(
+     h0,
+     ht,
+     ssm_state_indices,
++    output_state_indices,
+     scale,
+     stride_mixed_qkv_tok: tl.constexpr,
+     stride_a_tok: tl.constexpr,
+@@ -270,6 +271,7 @@ def fused_recurrent_gated_delta_rule_packed_decode_kernel(
+     stride_init_state_token: tl.constexpr,
+     stride_final_state_token: tl.constexpr,
+     stride_indices_seq: tl.constexpr,
++    stride_output_indices_seq: tl.constexpr,
+     H: tl.constexpr,
+     HV: tl.constexpr,
+     K: tl.constexpr,
+@@ -290,6 +292,9 @@ def fused_recurrent_gated_delta_rule_packed_decode_kernel(
+     mask_h = mask_v[:, None] & mask_k[None, :]
+ 
+     state_idx = tl.load(ssm_state_indices + i_n * stride_indices_seq).to(tl.int64)
++    final_state_idx = tl.load(
++        output_state_indices + i_n * stride_output_indices_seq
++    ).to(tl.int64)
+     p_o = o + (i_n * HV + i_hv) * V + o_v
+ 
+     # Skip if state index is invalid (NULL_BLOCK_ID=0)
+@@ -331,7 +336,7 @@ def fused_recurrent_gated_delta_rule_packed_decode_kernel(
+     b_o = tl.sum(b_h * b_q[None, :], 1)
+     tl.store(p_o, b_o.to(p_o.dtype.element_ty), mask=mask_v)
+ 
+-    p_ht = ht + state_idx * stride_final_state_token
++    p_ht = ht + final_state_idx * stride_final_state_token
+     p_ht = p_ht + i_hv * V * K + o_v[:, None] * K + o_k[None, :]
+     tl.store(p_ht, b_h.to(p_ht.dtype.element_ty), mask=mask_h)
+ 
+@@ -346,8 +351,11 @@ def fused_recurrent_gated_delta_rule_packed_decode(
+     initial_state: torch.Tensor,
+     out: torch.Tensor,
+     ssm_state_indices: torch.Tensor,
++    output_state_indices: torch.Tensor | None = None,
+     use_qk_l2norm_in_kernel: bool = False,
+ ) -> tuple[torch.Tensor, torch.Tensor]:
++    if output_state_indices is None:
++        output_state_indices = ssm_state_indices
+     if mixed_qkv.ndim != 2:
+         raise ValueError(
+             f"`mixed_qkv` must be a 2D tensor (got ndim={mixed_qkv.ndim})."
+@@ -368,6 +376,11 @@ def fused_recurrent_gated_delta_rule_packed_decode(
+         raise ValueError(
+             f"`ssm_state_indices` must be 1D for packed decode (got ndim={ssm_state_indices.ndim})."
+         )
++    if output_state_indices.ndim != 1:
++        raise ValueError(
++            "`output_state_indices` must be 1D for packed decode "
++            f"(got ndim={output_state_indices.ndim})."
++        )
+     if not out.is_contiguous():
+         raise ValueError("`out` must be contiguous.")
+ 
+@@ -380,6 +393,7 @@ def fused_recurrent_gated_delta_rule_packed_decode(
+         or initial_state.device != dev
+         or out.device != dev
+         or ssm_state_indices.device != dev
++        or output_state_indices.device != dev
+     ):
+         raise ValueError("All inputs must be on the same device.")
+ 
+@@ -393,6 +407,11 @@ def fused_recurrent_gated_delta_rule_packed_decode(
+         raise ValueError(
+             f"`ssm_state_indices` must have shape [B] (got {tuple(ssm_state_indices.shape)}; expected ({B},))."
+         )
++    if output_state_indices.shape[0] != B:
++        raise ValueError(
++            "`output_state_indices` must have shape "
++            f"[B] (got {tuple(output_state_indices.shape)}; expected ({B},))."
++        )
+ 
+     if initial_state.ndim != 4:
+         raise ValueError(
+@@ -444,6 +463,7 @@ def fused_recurrent_gated_delta_rule_packed_decode(
+     stride_init_state_token = initial_state.stride(0)
+     stride_final_state_token = initial_state.stride(0)
+     stride_indices_seq = ssm_state_indices.stride(0)
++    stride_output_indices_seq = output_state_indices.stride(0)
+ 
+     NV = triton.cdiv(V, BV)
+     grid = (NV, B * HV)
+@@ -457,6 +477,7 @@ def fused_recurrent_gated_delta_rule_packed_decode(
+         h0=initial_state,
+         ht=initial_state,
+         ssm_state_indices=ssm_state_indices,
++        output_state_indices=output_state_indices,
+         scale=scale,
+         stride_mixed_qkv_tok=stride_mixed_qkv_tok,
+         stride_a_tok=stride_a_tok,
+@@ -464,6 +485,7 @@ def fused_recurrent_gated_delta_rule_packed_decode(
+         stride_init_state_token=stride_init_state_token,
+         stride_final_state_token=stride_final_state_token,
+         stride_indices_seq=stride_indices_seq,
++        stride_output_indices_seq=stride_output_indices_seq,
+         H=H,
+         HV=HV,
+         K=K,
+diff --git a/vllm/model_executor/layers/fla/ops/fused_sigmoid_gating.py b/vllm/model_executor/layers/fla/ops/fused_sigmoid_gating.py
+index 7e0c7e05ca..8f305da9f8 100644
+--- a/vllm/model_executor/layers/fla/ops/fused_sigmoid_gating.py
++++ b/vllm/model_executor/layers/fla/ops/fused_sigmoid_gating.py
+@@ -36,6 +36,7 @@ def fused_sigmoid_gating_delta_rule_update_kernel(
+     ht,
+     cu_seqlens,
+     ssm_state_indices,
++    output_state_indices,
+     num_accepted_tokens,
+     scale,
+     N: tl.int64,  # num of sequences
+@@ -51,12 +52,14 @@ def fused_sigmoid_gating_delta_rule_update_kernel(
+     stride_final_state_token: tl.constexpr,
+     stride_indices_seq: tl.constexpr,
+     stride_indices_tok: tl.constexpr,
++    stride_output_indices_seq: tl.constexpr,
+     USE_INITIAL_STATE: tl.constexpr,  # whether to use initial state
+     INPLACE_FINAL_STATE: tl.constexpr,  # whether to store final state inplace
+     USE_QK_L2NORM_IN_KERNEL: tl.constexpr,
+     IS_VARLEN: tl.constexpr,
+     IS_CONTINUOUS_BATCHING: tl.constexpr,
+     IS_SPEC_DECODING: tl.constexpr,
++    HAS_OUTPUT_STATE_INDICES: tl.constexpr,
+     IS_KDA: tl.constexpr,
+ ):
+     i_k, i_v, i_nh = tl.program_id(0), tl.program_id(1), tl.program_id(2)
+@@ -156,9 +159,14 @@ def fused_sigmoid_gating_delta_rule_update_kernel(
+         # keep the states for multi-query tokens
+         if INPLACE_FINAL_STATE:
+             # Load state index and check for invalid entries
+-            final_state_idx = tl.load(
+-                ssm_state_indices + i_n * stride_indices_seq + i_t
+-            ).to(tl.int64)
++            if HAS_OUTPUT_STATE_INDICES:
++                final_state_idx = tl.load(
++                    output_state_indices + i_n * stride_output_indices_seq + i_t
++                ).to(tl.int64)
++            else:
++                final_state_idx = tl.load(
++                    ssm_state_indices + i_n * stride_indices_seq + i_t
++                ).to(tl.int64)
+             # Only store if state index is valid (not NULL_BLOCK_ID=0)
+             if final_state_idx > 0:
+                 p_ht = ht + final_state_idx * stride_final_state_token
+@@ -196,6 +204,7 @@ def fused_sigmoid_gating_delta_rule_update(
+     num_accepted_tokens: torch.Tensor | None = None,
+     use_qk_l2norm_in_kernel: bool = False,
+     is_kda: bool = False,
++    output_state_indices: torch.Tensor | None = None,
+ ):
+     """
+     Fused triton implementation of sigmoid gating delta rule update.
+@@ -237,6 +246,12 @@ def fused_sigmoid_gating_delta_rule_update(
+         stride_indices_seq, stride_indices_tok = ssm_state_indices.stride(0), 1
+     else:
+         stride_indices_seq, stride_indices_tok = ssm_state_indices.stride()
++    if output_state_indices is None:
++        stride_output_indices_seq = 1
++    elif output_state_indices.ndim == 1:
++        stride_output_indices_seq = output_state_indices.stride(0)
++    else:
++        stride_output_indices_seq = output_state_indices.stride(0)
+ 
+     grid = (NK, NV, N * HV)
+     fused_sigmoid_gating_delta_rule_update_kernel[grid](
+@@ -255,6 +270,7 @@ def fused_sigmoid_gating_delta_rule_update(
+         cu_seqlens=cu_seqlens,
+         ssm_state_indices=ssm_state_indices,
+         num_accepted_tokens=num_accepted_tokens,
++        output_state_indices=output_state_indices,
+         scale=scale,
+         N=N,
+         T=T,
+@@ -269,9 +285,11 @@ def fused_sigmoid_gating_delta_rule_update(
+         stride_final_state_token=stride_final_state_token,
+         stride_indices_seq=stride_indices_seq,
+         stride_indices_tok=stride_indices_tok,
++        stride_output_indices_seq=stride_output_indices_seq,
+         INPLACE_FINAL_STATE=inplace_final_state,
+         USE_QK_L2NORM_IN_KERNEL=use_qk_l2norm_in_kernel,
+         IS_KDA=is_kda,
++        HAS_OUTPUT_STATE_INDICES=output_state_indices is not None,
+         num_warps=num_warps,
+         num_stages=num_stages,
+     )
+diff --git a/vllm/model_executor/layers/mamba/gdn/qwen_gdn_linear_attn.py b/vllm/model_executor/layers/mamba/gdn/qwen_gdn_linear_attn.py
+index 06bfe5c5de..23f72aaf63 100644
+--- a/vllm/model_executor/layers/mamba/gdn/qwen_gdn_linear_attn.py
++++ b/vllm/model_executor/layers/mamba/gdn/qwen_gdn_linear_attn.py
+@@ -2,7 +2,9 @@
+ # SPDX-FileCopyrightText: Copyright contributors to the vLLM project
+ """Inference-only Qwen3-Next/Qwen3.5 model."""
+ 
++import os
+ import functools
++import hashlib
+ from typing import Literal
+ 
+ import torch
+@@ -18,7 +20,11 @@ from vllm.config import (
+ from vllm.distributed import (
+     divide,
+ )
+-from vllm.forward_context import ForwardContext, get_forward_context
++from vllm.forward_context import (
++    ForwardContext,
++    get_forward_context,
++    is_speculative_forward,
++)
+ from vllm.logger import init_logger
+ from vllm.model_executor.custom_op import CustomOp, PluggableLayer
+ from vllm.model_executor.layers.fla.ops import (
+@@ -860,13 +866,68 @@ class QwenGatedDeltaNetAttention(GatedDeltaNetAttention):
+         The RMSNormGated + quant sequence is eligible for fusion
+         by the compilation pass when fuse_norm_quant is enabled.
+         """
++        trace_output_projection = bool(
++            os.getenv("VLLM_TRACE_SPEC_ACCEPTANCE")
++            and ".layers.41." in self.prefix
++        )
+         z_shape_og = z.shape
+-        core_attn_out = core_attn_out.reshape(-1, core_attn_out.shape[-1])
+-        z = z.reshape(-1, z.shape[-1])
+-        core_attn_out = self.norm(core_attn_out, z)
+-        core_attn_out = core_attn_out.reshape(z_shape_og)
++        if (
++            envs.VLLM_BATCH_INVARIANT
++            and z_shape_og[0] > 1
++            and is_speculative_forward()
++        ):
++            core_attn_out = torch.stack(
++                [
++                    self.norm(
++                        core_attn_out[token_idx].reshape(
++                            -1, core_attn_out.shape[-1]
++                        ),
++                        z[token_idx].reshape(-1, z.shape[-1]),
++                    )
++                    for token_idx in range(z_shape_og[0])
++                ],
++                dim=0,
++            )
++        else:
++            core_attn_out = core_attn_out.reshape(
++                -1, core_attn_out.shape[-1]
++            )
++            z = z.reshape(-1, z.shape[-1])
++            core_attn_out = self.norm(core_attn_out, z)
++            core_attn_out = core_attn_out.reshape(z_shape_og)
++        if trace_output_projection:
++            print(
++                "GDN_NORM_HASH",
++                {
++                    "z": [
++                        hashlib.sha256(
++                            row.contiguous().view(torch.uint8).cpu().numpy().tobytes()
++                        ).hexdigest()
++                        for row in z.reshape(z_shape_og)
++                    ],
++                    "output": [
++                        hashlib.sha256(
++                            row.contiguous().view(torch.uint8).cpu().numpy().tobytes()
++                        ).hexdigest()
++                        for row in core_attn_out
++                    ],
++                },
++                flush=True,
++            )
+         core_attn_out = core_attn_out.flatten(-2)  # ... h d -> ... (h d)
+-        output[:num_tokens], _ = self.out_proj(core_attn_out)
++        projected_output, _ = self.out_proj(core_attn_out)
++        output[:num_tokens] = projected_output
++        if trace_output_projection:
++            print(
++                "GDN_PROJECTION_HASH",
++                [
++                    hashlib.sha256(
++                        row.contiguous().view(torch.uint8).cpu().numpy().tobytes()
++                    ).hexdigest()
++                    for row in projected_output
++                ],
++                flush=True,
++            )
+ 
+     def forward_hip(
+         self,
+@@ -1329,18 +1390,69 @@ class QwenGatedDeltaNetAttention(GatedDeltaNetAttention):
+         if spec_sequence_masks is not None:
+             if attn_metadata.num_prefills == 0 and attn_metadata.num_decodes == 0:
+                 mixed_qkv_spec = mixed_qkv
++                a_spec = a
++                b_spec = b
+                 mixed_qkv_non_spec = None
+             else:
+                 mixed_qkv_spec = mixed_qkv.index_select(0, spec_token_indx)
++                a_spec = a.index_select(0, spec_token_indx)
++                b_spec = b.index_select(0, spec_token_indx)
+                 mixed_qkv_non_spec = mixed_qkv.index_select(0, non_spec_token_indx)
+         else:
+             mixed_qkv_spec = None
++            a_spec = None
++            b_spec = None
+             mixed_qkv_non_spec = mixed_qkv
+ 
+         # 1.1: Process the multi-query part
++        trace_conv_output = None
++        trace_conv_expected_state = None
+         if spec_sequence_masks is not None:
+             # spec_state_indices_tensor is always set when spec_sequence_masks is set
+             assert spec_state_indices_tensor is not None
++            if (
++                os.getenv("VLLM_TRACE_SPEC_ACCEPTANCE")
++                and ".layers.41." in self.prefix
++            ):
++                trace_block_idx = spec_state_indices_tensor[0, 0].view(1)
++                trace_conv_width = conv_weights.shape[1] - 1
++                trace_start = (num_accepted_tokens[0] - 1).item()
++                trace_full_conv_state = torch.index_select(
++                    conv_state, 0, trace_block_idx
++                ).clone()
++                trace_conv_state = trace_full_conv_state[
++                    :, :, trace_start : trace_start + trace_conv_width
++                ].clone()
++                trace_prefix_len = (
++                    conv_state.shape[-1] - mixed_qkv_spec.shape[0]
++                )
++                trace_conv_expected_state = torch.cat(
++                    (
++                        trace_full_conv_state[
++                            :,
++                            :,
++                            trace_start + 1 : trace_start + 1 + trace_prefix_len,
++                        ],
++                        mixed_qkv_spec.transpose(0, 1).unsqueeze(0),
++                    ),
++                    dim=-1,
++                )
++                trace_conv_outputs = []
++                trace_temp_idx = torch.zeros_like(trace_block_idx)
++                for token_idx in range(mixed_qkv_spec.shape[0]):
++                    trace_conv_outputs.append(
++                        causal_conv1d_update(
++                            mixed_qkv_spec[token_idx : token_idx + 1],
++                            trace_conv_state,
++                            conv_weights,
++                            self.conv1d.bias,
++                            self.activation,
++                            conv_state_indices=trace_temp_idx,
++                            null_block_id=None,
++                            validate_data=False,
++                        )
++                    )
++                trace_conv_output = torch.cat(trace_conv_outputs, dim=0)
+             mixed_qkv_spec = causal_conv1d_update(
+                 mixed_qkv_spec,
+                 conv_state,
+@@ -1355,6 +1467,43 @@ class QwenGatedDeltaNetAttention(GatedDeltaNetAttention):
+                 max_query_len=spec_state_indices_tensor.size(-1),
+                 validate_data=False,
+             )
++            if (
++                os.getenv("VLLM_TRACE_SPEC_ACCEPTANCE")
++                and ".layers.41." in self.prefix
++            ):
++                print(
++                    "GDN_CONV_HASH",
++                    {
++                        "mode": "spec",
++                        "hashes": [
++                            hashlib.sha256(
++                                row.contiguous()
++                                .view(torch.uint8)
++                                .cpu()
++                                .numpy()
++                                .tobytes()
++                            ).hexdigest()
++                            for row in mixed_qkv_spec
++                        ],
++                    },
++                    flush=True,
++                )
++            if trace_conv_output is not None:
++                actual_conv_state = torch.index_select(
++                    conv_state, 0, trace_block_idx
++                )
++                print(
++                    "GDN_CONV_DIFF",
++                    {
++                        "output_max": (
++                            mixed_qkv_spec - trace_conv_output
++                        ).abs().max().item(),
++                        "state_max": (
++                            actual_conv_state - trace_conv_expected_state
++                        ).abs().max().item(),
++                    },
++                    flush=True,
++                )
+ 
+         # 1.2: Process the remaining part
+         if attn_metadata.num_prefills > 0:
+@@ -1450,29 +1599,96 @@ class QwenGatedDeltaNetAttention(GatedDeltaNetAttention):
+             beta_non_spec = None
+ 
+         # 2. Recurrent attention
+-
+-        # 2.1: Process the multi-query part
++        # 2.1: Process speculative tokens. At concurrency one, replay each
++        # token through the packed decode kernel used by ordinary generation.
++        # Separate input/output state indices preserve every rollback snapshot
++        # without changing the target model's recurrent arithmetic.
+         if spec_sequence_masks is not None:
+-            core_attn_out_spec, last_recurrent_state = (
+-                fused_sigmoid_gating_delta_rule_update(
+-                    A_log=self.A_log,
+-                    a=a,
+-                    b=b,
+-                    dt_bias=self.dt_bias,
+-                    q=query_spec,
+-                    k=key_spec,
+-                    v=value_spec,
+-                    initial_state=ssm_state,
+-                    inplace_final_state=True,
+-                    cu_seqlens=spec_query_start_loc[  # type: ignore[index]
+-                        : attn_metadata.num_spec_decodes
+-                        + 1  # type: ignore[attr-defined]
+-                    ],
+-                    ssm_state_indices=spec_state_indices_tensor,
+-                    num_accepted_tokens=num_accepted_tokens,
+-                    use_qk_l2norm_in_kernel=True,
++            assert spec_state_indices_tensor is not None
++            assert mixed_qkv_spec is not None
++            assert a_spec is not None
++            assert b_spec is not None
++            if attn_metadata.num_spec_decodes == 1:
++                num_spec_tokens = query_spec.shape[1]
++                start_offset = (num_accepted_tokens[:1] - 1).long()
++                source_state_idx = torch.gather(
++                    spec_state_indices_tensor[0], 0, start_offset
++                )
++                packed_outputs = []
++                for token_idx in range(num_spec_tokens):
++                    target_state_idx = spec_state_indices_tensor[
++                        0, token_idx : token_idx + 1
++                    ]
++                    token_output = torch.empty(
++                        (
++                            1,
++                            1,
++                            value_spec.shape[2],
++                            value_spec.shape[3],
++                        ),
++                        dtype=value_spec.dtype,
++                        device=value_spec.device,
++                    )
++                    fused_recurrent_gated_delta_rule_packed_decode(
++                        mixed_qkv=mixed_qkv_spec[
++                            token_idx : token_idx + 1
++                        ].contiguous(),
++                        a=a_spec[token_idx : token_idx + 1].contiguous(),
++                        b=b_spec[token_idx : token_idx + 1].contiguous(),
++                        A_log=self.A_log,
++                        dt_bias=self.dt_bias,
++                        scale=self.head_k_dim**-0.5,
++                        initial_state=ssm_state,
++                        out=token_output,
++                        ssm_state_indices=source_state_idx,
++                        output_state_indices=target_state_idx,
++                        use_qk_l2norm_in_kernel=True,
++                    )
++                    packed_outputs.append(token_output)
++                    source_state_idx = target_state_idx
++                core_attn_out_spec = torch.cat(packed_outputs, dim=1)
++                last_recurrent_state = ssm_state
++            else:
++                core_attn_out_spec, last_recurrent_state = (
++                    fused_sigmoid_gating_delta_rule_update(
++                        A_log=self.A_log,
++                        a=a_spec,
++                        b=b_spec,
++                        dt_bias=self.dt_bias,
++                        q=query_spec,
++                        k=key_spec,
++                        v=value_spec,
++                        initial_state=ssm_state,
++                        inplace_final_state=True,
++                        cu_seqlens=spec_query_start_loc[
++                            : attn_metadata.num_spec_decodes + 1
++                        ],
++                        ssm_state_indices=spec_state_indices_tensor,
++                        num_accepted_tokens=num_accepted_tokens,
++                        use_qk_l2norm_in_kernel=True,
++                    )
++                )
++            if (
++                os.getenv("VLLM_TRACE_SPEC_ACCEPTANCE")
++                and ".layers.41." in self.prefix
++            ):
++                print(
++                    "GDN_RECURRENT_HASH",
++                    {
++                        "mode": "spec",
++                        "hashes": [
++                            hashlib.sha256(
++                                row.contiguous()
++                                .view(torch.uint8)
++                                .cpu()
++                                .numpy()
++                                .tobytes()
++                            ).hexdigest()
++                            for row in core_attn_out_spec.squeeze(0)
++                        ],
++                    },
++                    flush=True,
+                 )
+-            )
+         else:
+             core_attn_out_spec, last_recurrent_state = None, None
+ 
+@@ -1680,6 +1896,27 @@ class QwenGatedDeltaNetAttention(GatedDeltaNetAttention):
+             conv_state_indices=non_spec_state_indices_tensor[:num_actual_tokens],  # type: ignore[index]
+             validate_data=False,
+         )
++        if (
++            os.getenv("VLLM_TRACE_SPEC_ACCEPTANCE")
++            and ".layers.41." in self.prefix
++        ):
++            print(
++                "GDN_CONV_HASH",
++                {
++                    "mode": "plain",
++                    "hashes": [
++                        hashlib.sha256(
++                            row.contiguous()
++                            .view(torch.uint8)
++                            .cpu()
++                            .numpy()
++                            .tobytes()
++                        ).hexdigest()
++                        for row in mixed_qkv_non_spec
++                    ],
++                },
++                flush=True,
++            )
+         out_buf = core_attn_out[:num_actual_tokens].unsqueeze(1)
+         fused_recurrent_gated_delta_rule_packed_decode(
+             mixed_qkv=mixed_qkv_non_spec,
+@@ -1693,9 +1930,32 @@ class QwenGatedDeltaNetAttention(GatedDeltaNetAttention):
+             ssm_state_indices=non_spec_state_indices_tensor[:num_actual_tokens],  # type: ignore[index]
+             use_qk_l2norm_in_kernel=True,
+         )
++        if (
++            os.getenv("VLLM_TRACE_SPEC_ACCEPTANCE")
++            and ".layers.41." in self.prefix
++        ):
++            print(
++                "GDN_RECURRENT_HASH",
++                {
++                    "mode": "plain",
++                    "hashes": [
++                        hashlib.sha256(
++                            row.contiguous()
++                            .view(torch.uint8)
++                            .cpu()
++                            .numpy()
++                            .tobytes()
++                        ).hexdigest()
++                        for row in out_buf.squeeze(1)
++                    ],
++                },
++                flush=True,
++            )
+         return
+ 
+ 
++
++
+ def qwen_gdn_attention_core(
+     qkv_or_qkvz: torch.Tensor,
+     b_or_ba: torch.Tensor,
+diff --git a/vllm/model_executor/layers/mamba/ops/causal_conv1d.py b/vllm/model_executor/layers/mamba/ops/causal_conv1d.py
+index f7c237ca2d..c61eb10f91 100644
+--- a/vllm/model_executor/layers/mamba/ops/causal_conv1d.py
++++ b/vllm/model_executor/layers/mamba/ops/causal_conv1d.py
+@@ -1143,6 +1143,73 @@ def causal_conv1d_update(
+     _, width = weight.shape
+     # conv_state: (..., dim, state_len), where state_len >= width - 1
+     num_cache_lines, _, state_len = conv_state.size()
++    if (
++        query_start_loc is not None
++        and batch == 1
++        and seqlen == 8
++        and num_accepted_tokens is not None
++        and conv_state_indices is not None
++        and block_idx_last_scheduled_token is None
++    ):
++        state_idx = conv_state_indices[:1].long()
++        state_block = torch.index_select(conv_state, 0, state_idx)
++        state_offset = (num_accepted_tokens[:1] - 1).long()
++        history_indices = state_offset.view(1, 1, 1) + torch.arange(
++            width - 1, device=x.device
++        ).view(1, 1, -1)
++        history = torch.gather(
++            state_block,
++            2,
++            history_indices.expand(1, dim, width - 1),
++        )
++        input_by_dim = x.transpose(0, 1).unsqueeze(0).clone()
++        temp_indices = torch.zeros_like(conv_state_indices[:1])
++        temp_accepted = torch.ones_like(num_accepted_tokens[:1])
++        first_state = torch.cat(
++            (
++                history,
++                torch.zeros(
++                    (1, dim, 6),
++                    device=x.device,
++                    dtype=conv_state.dtype,
++                ),
++            ),
++            dim=2,
++        )
++        first_output = causal_conv1d_update(
++            input_by_dim[:, :, :7].clone(),
++            first_state,
++            weight,
++            bias,
++            activation,
++            conv_state_indices=temp_indices,
++            num_accepted_tokens=temp_accepted,
++            null_block_id=None,
++        )
++        second_state = input_by_dim[
++            :, :, 7 - (width - 1) : 7
++        ].clone()
++        second_output = causal_conv1d_update(
++            input_by_dim[:, :, 7:].clone(),
++            second_state,
++            weight,
++            bias,
++            activation,
++            conv_state_indices=temp_indices,
++            num_accepted_tokens=temp_accepted,
++            null_block_id=None,
++        )
++        conv_state.index_copy_(
++            0,
++            state_idx,
++            torch.cat((history[:, :, 1:], input_by_dim), dim=2),
++        )
++        return (
++            torch.cat((first_output, second_output), dim=2)
++            .squeeze(0)
++            .transpose(0, 1)
++            .to(original_x_dtype)
++        )
+ 
+     if validate_data:
+         assert dim == weight.size(0)
+diff --git a/vllm/model_executor/models/qwen3_5.py b/vllm/model_executor/models/qwen3_5.py
+index 43b9004638..cd764016d6 100644
+--- a/vllm/model_executor/models/qwen3_5.py
++++ b/vllm/model_executor/models/qwen3_5.py
+@@ -198,6 +198,7 @@ class Qwen3_5DecoderLayer(Qwen3NextDecoderLayer):
+             )
+ 
+ 
++
+ @support_torch_compile(
+     dynamic_arg_dims={
+         "input_ids": 0,
+@@ -250,6 +251,12 @@ class Qwen3_5Model(Qwen3NextModel):
+ 
+         self.aux_hidden_state_layers: tuple[int, ...] = ()
+ 
++        self.prefix = prefix
++        compilation_config = vllm_config.compilation_config
++        if prefix in compilation_config.static_forward_context:
++            raise ValueError(f"Duplicate layer name: {prefix}")
++        compilation_config.static_forward_context[prefix] = self
++
+     def load_fused_expert_weights(
+         self,
+         name: str,
+diff --git a/vllm/model_executor/models/qwen3_next.py b/vllm/model_executor/models/qwen3_next.py
+index acce2a7679..aea880d41f 100644
+--- a/vllm/model_executor/models/qwen3_next.py
++++ b/vllm/model_executor/models/qwen3_next.py
+@@ -2,6 +2,8 @@
+ # SPDX-FileCopyrightText: Copyright contributors to the vLLM project
+ """Inference-only Qwen3Next model."""
+ 
++import hashlib
++import os
+ from collections.abc import Iterable
+ from itertools import islice
+ 
+@@ -22,6 +24,7 @@ from vllm.distributed import (
+     get_tensor_model_parallel_world_size,
+     tensor_model_parallel_all_gather,
+ )
++from vllm.forward_context import ForwardContext, get_forward_context
+ from vllm.logger import init_logger
+ from vllm.model_executor.layers.attention import Attention
+ from vllm.model_executor.layers.fused_moe import (
+@@ -62,6 +65,12 @@ from vllm.model_executor.models.utils import sequence_parallel_chunk
+ from vllm.platforms import current_platform
+ from vllm.sequence import IntermediateTensors
+ from vllm.transformers_utils.configs.qwen3_next import Qwen3NextConfig
++from vllm.utils.torch_utils import (
++    LayerNameType,
++    _encode_layer_name,
++    _resolve_layer_name,
++    direct_register_custom_op,
++)
+ from vllm.v1.attention.backend import AttentionType
+ 
+ from .interfaces import (
+@@ -87,7 +96,6 @@ logger = init_logger(__name__)
+ 
+ KVCache = tuple[torch.Tensor, torch.Tensor]
+ 
+-
+ class Qwen3NextSparseMoeBlock(nn.Module):
+     def __init__(self, vllm_config: VllmConfig, prefix: str = ""):
+         super().__init__()
+@@ -517,6 +525,8 @@ class Qwen3NextDecoderLayer(nn.Module):
+         return hidden_states, residual
+ 
+ 
++
++
+ @support_torch_compile
+ class Qwen3NextModel(nn.Module, EagleModelMixin):
+     def __init__(self, *, vllm_config: VllmConfig, prefix: str = ""):
+@@ -556,6 +566,12 @@ class Qwen3NextModel(nn.Module, EagleModelMixin):
+         else:
+             self.norm = PPMissingLayer()
+ 
++        self.prefix = prefix
++        compilation_config = get_current_vllm_config().compilation_config
++        if prefix in compilation_config.static_forward_context:
++            raise ValueError(f"Duplicate layer name: {prefix}")
++        compilation_config.static_forward_context[prefix] = self
++
+     def embed_input_ids(self, input_ids: torch.Tensor) -> torch.Tensor:
+         return self.embed_tokens(input_ids)
+ 
+@@ -566,6 +582,80 @@ class Qwen3NextModel(nn.Module, EagleModelMixin):
+         intermediate_tensors: IntermediateTensors | None = None,
+         inputs_embeds: torch.Tensor | None = None,
+     ) -> torch.Tensor | IntermediateTensors | tuple[torch.Tensor, list[torch.Tensor]]:
++        if intermediate_tensors is not None:
++            return self._forward_impl(
++                input_ids,
++                positions,
++                intermediate_tensors,
++                inputs_embeds,
++            )
++        num_tokens = (
++            inputs_embeds.shape[0]
++            if inputs_embeds is not None
++            else input_ids.shape[0]
++        )
++        output = torch.empty(
++            (num_tokens, self.config.hidden_size),
++            dtype=self.embed_tokens.weight.dtype,
++            device=positions.device,
++        )
++        if self.aux_hidden_state_layers:
++            assert len(self.aux_hidden_state_layers) == 5
++            aux_output_0 = torch.empty_like(output)
++            aux_output_1 = torch.empty_like(output)
++            aux_output_2 = torch.empty_like(output)
++            aux_output_3 = torch.empty_like(output)
++            aux_output_4 = torch.empty_like(output)
++            torch.ops.vllm.qwen3_next_model_forward_aux5(
++                input_ids,
++                positions,
++                inputs_embeds,
++                output,
++                aux_output_0,
++                aux_output_1,
++                aux_output_2,
++                aux_output_3,
++                aux_output_4,
++                _encode_layer_name(self.prefix),
++            )
++            return output, [
++                aux_output_0,
++                aux_output_1,
++                aux_output_2,
++                aux_output_3,
++                aux_output_4,
++            ]
++        torch.ops.vllm.qwen3_next_model_forward(
++            input_ids,
++            positions,
++            inputs_embeds,
++            output,
++            _encode_layer_name(self.prefix),
++        )
++        return output
++
++    def _forward_impl(
++        self,
++        input_ids: torch.Tensor | None,
++        positions: torch.Tensor,
++        intermediate_tensors: IntermediateTensors | None = None,
++        inputs_embeds: torch.Tensor | None = None,
++    ) -> torch.Tensor | IntermediateTensors | tuple[torch.Tensor, list[torch.Tensor]]:
++        trace_hidden_states = bool(os.getenv("VLLM_TRACE_SPEC_ACCEPTANCE"))
++        if trace_hidden_states:
++            print(
++                "MODEL_INPUT_TRACE",
++                {
++                    "shape": list(positions.shape),
++                    "positions": positions.reshape(-1)[:8].tolist(),
++                    "input_ids": (
++                        None
++                        if input_ids is None
++                        else input_ids.reshape(-1)[:8].tolist()
++                    ),
++                },
++                flush=True,
++            )
+         if get_pp_group().is_first_rank:
+             if inputs_embeds is not None:
+                 hidden_states = inputs_embeds
+@@ -590,6 +680,36 @@ class Qwen3NextModel(nn.Module, EagleModelMixin):
+             self._maybe_add_hidden_state(
+                 aux_hidden_states, layer_idx + 1, hidden_states, residual
+             )
++            if trace_hidden_states:
++                print(
++                    "MODEL_LAYER_TRACE",
++                    {
++                        "layer": layer_idx,
++                        "shape": list(positions.shape),
++                        "positions": positions.reshape(-1)[:8].tolist(),
++                        "hidden_hashes": [
++                            hashlib.sha256(
++                                row.contiguous()
++                                .view(torch.int16)
++                                .cpu()
++                                .numpy()
++                                .tobytes()
++                            ).hexdigest()
++                            for row in hidden_states[:8]
++                        ],
++                        "residual_hashes": [
++                            hashlib.sha256(
++                                row.contiguous()
++                                .view(torch.int16)
++                                .cpu()
++                                .numpy()
++                                .tobytes()
++                            ).hexdigest()
++                            for row in residual[:8]
++                        ],
++                    },
++                    flush=True,
++                )
+ 
+         if not get_pp_group().is_last_rank:
+             return IntermediateTensors(
+@@ -719,6 +839,102 @@ class Qwen3NextModel(nn.Module, EagleModelMixin):
+         return loaded_params
+ 
+ 
++def qwen3_next_model_forward(
++    input_ids: torch.Tensor | None,
++    positions: torch.Tensor,
++    inputs_embeds: torch.Tensor | None,
++    output: torch.Tensor,
++    layer_name: LayerNameType,
++) -> None:
++    layer_name = _resolve_layer_name(layer_name)
++    forward_context: ForwardContext = get_forward_context()
++    model = forward_context.no_compile_layers[layer_name]
++    result = model._forward_impl(
++        input_ids,
++        positions,
++        intermediate_tensors=None,
++        inputs_embeds=inputs_embeds,
++    )
++    output.copy_(result)
++
++
++def qwen3_next_model_forward_fake(
++    input_ids: torch.Tensor | None,
++    positions: torch.Tensor,
++    inputs_embeds: torch.Tensor | None,
++    output: torch.Tensor,
++    layer_name: LayerNameType,
++) -> None:
++    return
++
++
++direct_register_custom_op(
++    op_name="qwen3_next_model_forward",
++    op_func=qwen3_next_model_forward,
++    mutates_args=["output"],
++    fake_impl=qwen3_next_model_forward_fake,
++)
++
++
++def qwen3_next_model_forward_aux5(
++    input_ids: torch.Tensor | None,
++    positions: torch.Tensor,
++    inputs_embeds: torch.Tensor | None,
++    output: torch.Tensor,
++    aux_output_0: torch.Tensor,
++    aux_output_1: torch.Tensor,
++    aux_output_2: torch.Tensor,
++    aux_output_3: torch.Tensor,
++    aux_output_4: torch.Tensor,
++    layer_name: LayerNameType,
++) -> None:
++    layer_name = _resolve_layer_name(layer_name)
++    forward_context: ForwardContext = get_forward_context()
++    model = forward_context.no_compile_layers[layer_name]
++    result, aux_outputs = model._forward_impl(
++        input_ids,
++        positions,
++        intermediate_tensors=None,
++        inputs_embeds=inputs_embeds,
++    )
++    output.copy_(result)
++    aux_output_0.copy_(aux_outputs[0])
++    aux_output_1.copy_(aux_outputs[1])
++    aux_output_2.copy_(aux_outputs[2])
++    aux_output_3.copy_(aux_outputs[3])
++    aux_output_4.copy_(aux_outputs[4])
++
++
++def qwen3_next_model_forward_aux5_fake(
++    input_ids: torch.Tensor | None,
++    positions: torch.Tensor,
++    inputs_embeds: torch.Tensor | None,
++    output: torch.Tensor,
++    aux_output_0: torch.Tensor,
++    aux_output_1: torch.Tensor,
++    aux_output_2: torch.Tensor,
++    aux_output_3: torch.Tensor,
++    aux_output_4: torch.Tensor,
++    layer_name: LayerNameType,
++) -> None:
++    return
++
++
++direct_register_custom_op(
++    op_name="qwen3_next_model_forward_aux5",
++    op_func=qwen3_next_model_forward_aux5,
++    mutates_args=[
++        "output",
++        "aux_output_0",
++        "aux_output_1",
++        "aux_output_2",
++        "aux_output_3",
++        "aux_output_4",
++    ],
++    fake_impl=qwen3_next_model_forward_aux5_fake,
++)
++
++
+ class QwenNextMixtureOfExperts(MixtureOfExperts):
+     def update_physical_experts_metadata(
+         self,
+diff --git a/vllm/model_executor/warmup/deep_gemm_warmup.py b/vllm/model_executor/warmup/deep_gemm_warmup.py
+index d41604fc7a..5297891f33 100644
+--- a/vllm/model_executor/warmup/deep_gemm_warmup.py
++++ b/vllm/model_executor/warmup/deep_gemm_warmup.py
+@@ -19,6 +19,9 @@ from vllm.model_executor.layers.fused_moe.experts.deep_gemm_moe import DeepGemmE
+ from vllm.model_executor.layers.fused_moe.experts.triton_deep_gemm_moe import (
+     TritonOrDeepGemmExperts,
+ )
++from vllm.model_executor.kernels.linear.scaled_mm.deep_gemm import (
++    DeepGemmFp8BlockScaledMMKernel,
++)
+ from vllm.model_executor.layers.linear import LinearBase
+ from vllm.model_executor.layers.quantization.fp8 import Fp8LinearMethod
+ from vllm.model_executor.layers.quantization.online.mxfp8 import Mxfp8OnlineLinearMethod
+@@ -135,18 +138,22 @@ def _fp8_linear_may_use_deep_gemm(module: torch.nn.Module) -> bool:
+     Return True if the input module/layer could be processed with DeepGEMM.
+     """
+ 
+-    # FIXME: this logic is brittle and incorrect - since we
+-    # could use DeepGEMM with for than just Fp8LinearMethod
++    # Warm only layers whose selected runtime kernel is DeepGEMM. Inferring
++    # this from the quantization format alone also captures CUTLASS-backed
++    # native-FP8 layers, whose unconverted weights are invalid DeepGEMM inputs.
+     block_size = get_mk_alignment_for_contiguous_layout()[0]
+     if not (
+         isinstance(module, LinearBase)
+         and isinstance(module.quant_method, Fp8LinearMethod)
++        and isinstance(
++            getattr(module.quant_method, "fp8_linear", None),
++            DeepGemmFp8BlockScaledMMKernel,
++        )
+         and not isinstance(module.quant_method, Mxfp8OnlineLinearMethod)
+         and getattr(module.quant_method, "block_quant", False)
+         and not getattr(module.quant_method, "use_marlin", True)
+     ):
+         return False
+-
+     w, _, block_sizes = _extract_data_from_linear_base_module(module)
+     return (
+         block_sizes == get_mk_alignment_for_contiguous_layout()
+diff --git a/vllm/parser/qwen3.py b/vllm/parser/qwen3.py
+index f14da8234c..93290e4c17 100644
+--- a/vllm/parser/qwen3.py
++++ b/vllm/parser/qwen3.py
+@@ -54,13 +54,27 @@ _PARAM_RE = re.compile(
+ _PARTIAL_PARAM_RE = re.compile(r"<\s*parameter\s*=\s*([^>]+)>(.*)$", re.DOTALL)
+ 
+ 
++def _unwrap_parameter_value(value: str) -> str:
++    """Remove XML framing newlines without stripping argument whitespace."""
++    if value.startswith("\r\n"):
++        value = value[2:]
++    elif value.startswith("\n"):
++        value = value[1:]
++
++    if value.endswith("\r\n"):
++        value = value[:-2]
++    elif value.endswith("\n"):
++        value = value[:-1]
++    return value
++
++
+ def _qwen3_arg_converter(raw_args: str, partial: bool) -> str:
+     params: dict[str, object] = {}
+ 
+     for match in _PARAM_RE.finditer(raw_args):
+         name = match.group(1)
+         value = match.group(2)
+-        params[name] = value.strip()
++        params[name] = _unwrap_parameter_value(value)
+ 
+     if partial:
+         remaining = _PARAM_RE.sub("", raw_args)
+@@ -69,7 +83,7 @@ def _qwen3_arg_converter(raw_args: str, partial: bool) -> str:
+             name = m.group(1)
+             value = m.group(2)
+             if name:
+-                params[name] = value.strip()
++                params[name] = _unwrap_parameter_value(value)
+ 
+     return json.dumps(params, ensure_ascii=False)
+ 
+diff --git a/vllm/platforms/interface.py b/vllm/platforms/interface.py
+index 82c8741609..6ed4ce9b29 100644
+--- a/vllm/platforms/interface.py
++++ b/vllm/platforms/interface.py
+@@ -756,7 +756,9 @@ class Platform:
+             # mamba2 kernels.
+             base_chunk_size = mamba_block_size or model_config.get_mamba_chunk_size()
+             assert base_chunk_size is not None
+-            attn_tokens_per_mamba_state = cdiv(mamba_page_size, attn_page_size_1_token)
++            attn_tokens_per_mamba_state = cdiv(
++                mamba_page_size, attn_page_size_1_token
++            )
+             chunk_size = lcm(base_chunk_size, kernel_block_alignment_size)
+             attn_block_size = chunk_size * cdiv(attn_tokens_per_mamba_state, chunk_size)
+             cache_config.mamba_block_size = attn_block_size
+@@ -778,8 +780,6 @@ class Platform:
+ 
+         if cache_config.mamba_cache_mode == "align":
+             cache_config.mamba_block_size = cache_config.block_size
+-
+-        # Pad mamba page size to exactly match attention page size
+         attn_page_size = cache_config.block_size * attn_page_size_1_token
+         assert attn_page_size >= mamba_page_size
+ 
+diff --git a/vllm/v1/attention/backends/fa_utils.py b/vllm/v1/attention/backends/fa_utils.py
+index 474523780f..2470343e44 100644
+--- a/vllm/v1/attention/backends/fa_utils.py
++++ b/vllm/v1/attention/backends/fa_utils.py
+@@ -1,3 +1,4 @@
++import os
+ # SPDX-License-Identifier: Apache-2.0
+ # SPDX-FileCopyrightText: Copyright contributors to the vLLM project
+ 
+@@ -59,6 +60,8 @@ def get_flash_attn_version(
+     head_size_v: int | None = None,
+     has_sinks: bool = False,
+ ) -> int | None:
++    if os.getenv("VLLM_TRACE_SPEC_ACCEPTANCE"):
++        return 2
+     if current_platform.is_xpu():
+         return 2
+     if current_platform.is_rocm():
+diff --git a/vllm/v1/attention/backends/flash_attn.py b/vllm/v1/attention/backends/flash_attn.py
+index 9e33c0d823..9d1e0c4c93 100755
+--- a/vllm/v1/attention/backends/flash_attn.py
++++ b/vllm/v1/attention/backends/flash_attn.py
+@@ -2,6 +2,7 @@
+ # SPDX-FileCopyrightText: Copyright contributors to the vLLM project
+ """Attention layer with FlashAttention."""
+ 
++import os
+ import copy
+ from dataclasses import dataclass
+ from typing import ClassVar
+@@ -50,6 +51,7 @@ from vllm.config import (
+ from vllm.config.cache import CacheDType
+ from vllm.distributed.parallel_state import get_dcp_group
+ from vllm.logger import init_logger
++from vllm.forward_context import is_speculative_forward
+ from vllm.platforms.interface import DeviceCapability
+ from vllm.utils.math_utils import cdiv, round_up
+ from vllm.v1.attention.backend import (
+@@ -750,6 +752,23 @@ class FlashAttentionImpl(AttentionImpl):
+         # performance to make sure it does not introduce any overhead.
+ 
+         num_actual_tokens = attn_metadata.num_actual_tokens
++        if (
++            os.getenv("VLLM_TRACE_SPEC_ACCEPTANCE")
++            and num_actual_tokens == 8
++            and ".layers.3." in layer.layer_name
++        ):
++            print(
++                "FULL_ATTN_STATE_TRACE",
++                {
++                    "max_query_len": attn_metadata.max_query_len,
++                    "query_start": attn_metadata.query_start_loc.tolist(),
++                    "max_seq_len": attn_metadata.max_seq_len,
++                    "seq_lens": attn_metadata.seq_lens.tolist(),
++                    "slot_mapping": attn_metadata.slot_mapping[:8].tolist(),
++                    "block_table": attn_metadata.block_table.tolist(),
++                },
++                flush=True,
++            )
+ 
+         # Handle encoder attention differently - no KV cache needed
+         if attn_type in (AttentionType.ENCODER_ONLY, AttentionType.ENCODER):
+@@ -867,6 +886,49 @@ class FlashAttentionImpl(AttentionImpl):
+                     dynamic_causal = causal
+                     causal = False
+ 
++                if (
++                    envs.VLLM_BATCH_INVARIANT
++                    and is_speculative_forward()
++                    and max_seqlen_q > 1
++                    and cu_seqlens_q.numel() == 2
++                    and causal is True
++                ):
++                    single_cu_seqlens_q = torch.arange(
++                        2,
++                        dtype=cu_seqlens_q.dtype,
++                        device=cu_seqlens_q.device,
++                    )
++                    actual_max_seqlen_k = max_seqlen_k
++                    for token_idx in range(max_seqlen_q):
++                        prior_future_tokens = max_seqlen_q - 1 - token_idx
++                        flash_attn_varlen_func(
++                            q=query[token_idx : token_idx + 1],
++                            k=key_cache,
++                            v=value_cache,
++                            out=output[token_idx : token_idx + 1],
++                            cu_seqlens_q=single_cu_seqlens_q,
++                            max_seqlen_q=1,
++                            seqused_k=seqused_k - prior_future_tokens,
++                            max_seqlen_k=actual_max_seqlen_k - prior_future_tokens,
++                            softmax_scale=self.scale,
++                            causal=True,
++                            alibi_slopes=self.alibi_slopes,
++                            window_size=sliding_window_size,
++                            block_table=block_table,
++                            softcap=self.logits_soft_cap,
++                            scheduler_metadata=None,
++                            fa_version=self.vllm_flash_attn_version,
++                            q_descale=q_descale,
++                            k_descale=k_descale,
++                            v_descale=v_descale,
++                            dynamic_causal=None,
++                            num_splits=attn_metadata.max_num_splits,
++                            s_aux=self.sinks,
++                            mask_mod=mm_mask_mod,
++                            aux_tensors=mm_aux,
++                        )
++                    return output
++
+                 flash_attn_varlen_func(
+                     q=query[:num_actual_tokens],
+                     k=key_cache,
+diff --git a/vllm/v1/attention/backends/gdn_attn.py b/vllm/v1/attention/backends/gdn_attn.py
+index 340a304030..9376caa07a 100644
+--- a/vllm/v1/attention/backends/gdn_attn.py
++++ b/vllm/v1/attention/backends/gdn_attn.py
+@@ -29,6 +29,10 @@ class GDNAttentionBackend(AttentionBackend):
+     def get_name() -> str:
+         return "GDN_ATTN"
+ 
++    @classmethod
++    def supports_batch_invariance(cls) -> bool:
++        return True
++
+     @staticmethod
+     def get_builder_cls() -> type["GDNAttentionMetadataBuilder"]:
+         return GDNAttentionMetadataBuilder
+diff --git a/vllm/v1/core/kv_cache_utils.py b/vllm/v1/core/kv_cache_utils.py
+index b13c23d804..a40bff81d2 100644
+--- a/vllm/v1/core/kv_cache_utils.py
++++ b/vllm/v1/core/kv_cache_utils.py
+@@ -1086,7 +1086,10 @@ def unify_kv_cache_spec_page_size(
+                 isinstance(layer_spec, AttentionSpec)
+                 and layer_spec.indexes_kv_by_block_stride
+             ):
+-                new_spec = replace(layer_spec, page_size_padded=max_page_size)
++                new_spec = replace(
++                    layer_spec,
++                    page_size_padded=max_page_size,
++                )
+             else:
+                 raise NotImplementedError(
+                     f"Layer {layer_name}: page size is not divisible by the "
+@@ -1670,7 +1673,7 @@ def _get_kv_cache_groups_uniform_groups(
+     return [full_mla_group, *swa_mla_groups]
+ 
+ 
+-def _annotate_eagle_groups_deepseek_v4(
++def _annotate_eagle_groups(
+     vllm_config: VllmConfig,
+     kv_cache_spec: dict[str, KVCacheSpec],
+     kv_cache_groups: list[KVCacheGroupSpec],
+@@ -1678,20 +1681,16 @@ def _annotate_eagle_groups_deepseek_v4(
+     spec_config = vllm_config.speculative_config
+     if spec_config is None or not spec_config.use_eagle():
+         return
+-    # Detection uses the merged MLA spec's model_version.
+-    if not any(
+-        getattr(spec, "model_version", None) == "deepseek_v4"
+-        for spec in kv_cache_spec.values()
+-    ):
+-        return
+-    # DeepseekV4's MTP attention layer is always the last layer, and we flag whichever
+-    # group contains it.
+-    # FIXME(yifan): avoid/generalize this hacky check.
++
++    # EAGLE-family draft layers are registered after the target layers. Their
++    # last KV-cache layer contains an unverified token and is the only group
++    # that should receive the EAGLE last-block drop. Falling back to marking
++    # every group corrupts reused target-model attention state in hybrid models.
+     last_layer = next(reversed(kv_cache_spec))
+     for group in kv_cache_groups:
+         if last_layer in group.layer_names:
+             group.is_eagle_group = True
+-            break
++            return
+ 
+ 
+ def get_kv_cache_groups(
+@@ -1719,19 +1718,23 @@ def get_kv_cache_groups(
+         # KV cache of all layers are the same, which is true for
+         # most models. Allocate the same amount of memory for
+         # each layer.
+-        return _get_kv_cache_groups_uniform_spec(kv_cache_spec)
++        groups = _get_kv_cache_groups_uniform_spec(kv_cache_spec)
++        _annotate_eagle_groups(vllm_config, kv_cache_spec, groups)
++        return groups
+     elif uniform_spec := UniformTypeKVCacheSpecs.from_specs(kv_cache_spec):
+         # All layers need the same number of token slots (e.g., all layers are
+         # full attention, or all layers are sliding window attention with the
+         # same window size). Put all layers into one group.
+-        return _get_kv_cache_groups_uniform_type(uniform_spec)
++        groups = _get_kv_cache_groups_uniform_type(uniform_spec)
++        _annotate_eagle_groups(vllm_config, kv_cache_spec, groups)
++        return groups
+     elif grouped_specs := group_and_unify_kv_cache_specs(kv_cache_spec):
+         # DeepseekV4 case: All layers need the same number of token slots,
+         # yet some layers are full attention while others are sliding window
+         # attention in different sizes. Need to group layers into multiple
+         # UniformTypeKVCacheSpecs.
+         kv_cache_groups = _get_kv_cache_groups_uniform_groups(grouped_specs)
+-        _annotate_eagle_groups_deepseek_v4(vllm_config, kv_cache_spec, kv_cache_groups)
++        _annotate_eagle_groups(vllm_config, kv_cache_spec, kv_cache_groups)
+         return kv_cache_groups
+ 
+     # Pull HiddenStateCacheSpec layers out before the general multi-group
+@@ -1760,6 +1763,7 @@ def get_kv_cache_groups(
+             aligned = replace(spec, block_size=new_bs, page_size_padded=common_page)
+             groups.append(KVCacheGroupSpec([name], aligned))
+ 
++    _annotate_eagle_groups(vllm_config, kv_cache_spec, groups)
+     return groups
+ 
+ 
+diff --git a/vllm/v1/core/sched/scheduler.py b/vllm/v1/core/sched/scheduler.py
+index 90d93a110c..dc334713ad 100644
+--- a/vllm/v1/core/sched/scheduler.py
++++ b/vllm/v1/core/sched/scheduler.py
+@@ -1,5 +1,6 @@
+ # SPDX-License-Identifier: Apache-2.0
+ # SPDX-FileCopyrightText: Copyright contributors to the vLLM project
++import os
+ import itertools
+ import time
+ from collections import defaultdict, deque
+@@ -248,6 +249,37 @@ class Scheduler(SchedulerInterface):
+                 # for the last sampled token plus queries for each draft token.
+                 self.num_lookahead_tokens = self.num_spec_tokens + 1
+ 
++        self.spec_long_context_threshold: int | None = None
++        self.spec_long_context_tokens: int | None = None
++        long_context_threshold = os.getenv(
++            "VLLM_SPECULATIVE_LONG_CONTEXT_THRESHOLD"
++        )
++        long_context_tokens = os.getenv("VLLM_SPECULATIVE_LONG_CONTEXT_TOKENS")
++        if (long_context_threshold is None) != (long_context_tokens is None):
++            raise ValueError(
++                "VLLM_SPECULATIVE_LONG_CONTEXT_THRESHOLD and "
++                "VLLM_SPECULATIVE_LONG_CONTEXT_TOKENS must be set together."
++            )
++        if long_context_threshold is not None and long_context_tokens is not None:
++            threshold = int(long_context_threshold)
++            tokens = int(long_context_tokens)
++            if threshold <= 0:
++                raise ValueError(
++                    "VLLM_SPECULATIVE_LONG_CONTEXT_THRESHOLD must be positive."
++                )
++            if not 0 <= tokens <= self.num_spec_tokens:
++                raise ValueError(
++                    "VLLM_SPECULATIVE_LONG_CONTEXT_TOKENS must be between zero "
++                    "and the configured num_speculative_tokens."
++                )
++            self.spec_long_context_threshold = threshold
++            self.spec_long_context_tokens = tokens
++            logger.info(
++                "Using %d speculative tokens at contexts of %d tokens or longer",
++                tokens,
++                threshold,
++            )
++
+         # Create the KV cache manager.
+         if hash_block_size is None:
+             hash_block_size = block_size
+@@ -356,8 +388,8 @@ class Scheduler(SchedulerInterface):
+             # last chunk must be not smaller than `block_size`.
+             block_size = self.cache_config.block_size
+             last_cache_position = request.num_tokens - request.num_tokens % block_size
+-            # eagle prune
+-            if self.use_eagle:
++            # Eagle prunes a matching attention block only on a prefix-cache hit.
++            if self.use_eagle and num_computed_tokens > 0:
+                 last_cache_position = max(last_cache_position - block_size, 0)
+             num_computed_tokens_after_sched = num_computed_tokens + num_new_tokens
+             if num_computed_tokens_after_sched < last_cache_position:
+@@ -1055,6 +1087,20 @@ class Scheduler(SchedulerInterface):
+             num_spec_tokens_to_schedule = self.dynamic_sd_lookup[
+                 len(num_scheduled_tokens)
+             ]
++        if (
++            self.spec_long_context_threshold is not None
++            and self.spec_long_context_tokens is not None
++            and num_scheduled_tokens
++        ):
++            max_context_tokens = max(
++                self.requests[req_id].num_computed_tokens
++                for req_id in num_scheduled_tokens
++            )
++            if max_context_tokens >= self.spec_long_context_threshold:
++                num_spec_tokens_to_schedule = min(
++                    num_spec_tokens_to_schedule,
++                    self.spec_long_context_tokens,
++                )
+ 
+         scheduler_output = SchedulerOutput(
+             scheduled_new_reqs=new_reqs_data,
+diff --git a/vllm/v1/cudagraph_dispatcher.py b/vllm/v1/cudagraph_dispatcher.py
+index 6a48b6282d..73d5aceed3 100644
+--- a/vllm/v1/cudagraph_dispatcher.py
++++ b/vllm/v1/cudagraph_dispatcher.py
+@@ -1,6 +1,6 @@
+ # SPDX-License-Identifier: Apache-2.0
+ # SPDX-FileCopyrightText: Copyright contributors to the vLLM project
+-from collections.abc import Set as AbstractSet
++from collections.abc import Iterable, Set as AbstractSet
+ from dataclasses import replace
+ from itertools import product
+ 
+@@ -135,9 +135,14 @@ class CudagraphDispatcher:
+         uniform_decode: bool,
+         has_lora: bool,
+         num_active_loras: int = 0,
++        uniform_decode_query_len: int | None = None,
+     ) -> BatchDescriptor:
+         max_num_seqs = self.vllm_config.scheduler_config.max_num_seqs
+-        uniform_decode_query_len = self.uniform_decode_query_len
++        uniform_decode_query_len = (
++            self.uniform_decode_query_len
++            if uniform_decode_query_len is None
++            else uniform_decode_query_len
++        )
+         num_tokens_padded = self._bs_to_padded_graph_size[num_tokens]
+ 
+         if uniform_decode and self.cudagraph_mode.has_mode(CUDAGraphMode.FULL):
+@@ -164,11 +169,20 @@ class CudagraphDispatcher:
+         self.cudagraph_keys[runtime_mode].add(batch_descriptor)
+ 
+     def initialize_cudagraph_keys(
+-        self, cudagraph_mode: CUDAGraphMode, uniform_decode_query_len: int = 1
++        self,
++        cudagraph_mode: CUDAGraphMode,
++        uniform_decode_query_len: int = 1,
++        additional_uniform_decode_query_lens: Iterable[int] | None = None,
+     ):
+         # This should be called only after attention backend is initialized. So we can
+         # get the correct cudagraph mode after backend support is resolved.
+         self.cudagraph_mode = cudagraph_mode
++        uniform_decode_query_lens = {uniform_decode_query_len}
++        if additional_uniform_decode_query_lens is not None:
++            uniform_decode_query_lens.update(additional_uniform_decode_query_lens)
++        if any(query_len <= 0 for query_len in uniform_decode_query_lens):
++            raise ValueError("Uniform decode query lengths must be positive.")
++        self.uniform_decode_query_lens = tuple(sorted(uniform_decode_query_lens))
+ 
+         # Early exit if cudagraphs are disabled
+         if cudagraph_mode == CUDAGraphMode.NONE:
+@@ -202,33 +216,38 @@ class CudagraphDispatcher:
+                     batch_desc = replace(batch_desc, num_reqs=None, uniform=False)
+                 self.add_cudagraph_key(cudagraph_mode.mixed_mode(), batch_desc)
+ 
+-        # if decode cudagraph mode is FULL, and we don't already have mixed
+-        # mode full cudagraphs then add them here.
++        # Add full decode graphs for every configured speculative query length.
++        # Dynamic speculative schedules can otherwise fall back to the mixed
++        # prefill/decode graph when their depth differs from the maximum depth.
+         if (
+             cudagraph_mode.decode_mode() == CUDAGraphMode.FULL
+             and cudagraph_mode.separate_routine()
+         ):
+-            max_num_tokens = (
+-                uniform_decode_query_len
+-                * self.vllm_config.scheduler_config.max_num_seqs
+-            )
+             assert self.compilation_config.cudagraph_capture_sizes is not None, (
+                 "Cudagraph capture sizes must be set when full mode is enabled."
+             )
+-            cudagraph_capture_sizes_for_decode = [
+-                x
+-                for x in self.compilation_config.cudagraph_capture_sizes
+-                if x <= max_num_tokens and x >= uniform_decode_query_len
+-            ]
+-            for bs, num_active_loras in product(
+-                cudagraph_capture_sizes_for_decode, lora_cases
+-            ):
+-                self.add_cudagraph_key(
+-                    CUDAGraphMode.FULL,
+-                    self._create_padded_batch_descriptor(
+-                        bs, True, num_active_loras > 0, num_active_loras
+-                    ),
+-                )
++            max_num_seqs = self.vllm_config.scheduler_config.max_num_seqs
++            for query_len in self.uniform_decode_query_lens:
++                max_num_tokens = query_len * max_num_seqs
++                cudagraph_capture_sizes_for_decode = [
++                    size
++                    for size in self.compilation_config.cudagraph_capture_sizes
++                    if query_len <= size <= max_num_tokens
++                    and size % query_len == 0
++                ]
++                for bs, num_active_loras in product(
++                    cudagraph_capture_sizes_for_decode, lora_cases
++                ):
++                    self.add_cudagraph_key(
++                        CUDAGraphMode.FULL,
++                        self._create_padded_batch_descriptor(
++                            bs,
++                            True,
++                            num_active_loras > 0,
++                            num_active_loras,
++                            uniform_decode_query_len=query_len,
++                        ),
++                    )
+ 
+         self.keys_initialized = True
+ 
+@@ -240,6 +259,7 @@ class CudagraphDispatcher:
+         num_active_loras: int = 0,
+         valid_modes: AbstractSet[CUDAGraphMode] | None = None,
+         invalid_modes: AbstractSet[CUDAGraphMode] | None = None,
++        uniform_decode_query_len: int | None = None,
+     ) -> tuple[CUDAGraphMode, BatchDescriptor]:
+         """
+         Given conditions(e.g.,batch descriptor and if using piecewise only),
+@@ -301,7 +321,11 @@ class CudagraphDispatcher:
+ 
+         normalized_uniform = uniform_decode and self.cudagraph_mode.separate_routine()
+         batch_desc = self._create_padded_batch_descriptor(
+-            num_tokens, normalized_uniform, has_lora, effective_num_active_loras
++            num_tokens,
++            normalized_uniform,
++            has_lora,
++            effective_num_active_loras,
++            uniform_decode_query_len=uniform_decode_query_len,
+         )
+ 
+         if CUDAGraphMode.FULL in allowed_modes:
+diff --git a/vllm/v1/spec_decode/dflash.py b/vllm/v1/spec_decode/dflash.py
+index f76305d085..21ad6a65c6 100644
+--- a/vllm/v1/spec_decode/dflash.py
++++ b/vllm/v1/spec_decode/dflash.py
+@@ -7,13 +7,20 @@ from typing import Any
+ import torch
+ from typing_extensions import override
+ 
+-from vllm.config import VllmConfig
++from vllm.config import VllmConfig, get_layers_from_vllm_config
++from vllm.model_executor.layers.attention_layer_base import AttentionLayerBase
+ from vllm.forward_context import set_forward_context
+ from vllm.logger import init_logger
+ from vllm.triton_utils import triton
+ from vllm.v1.attention.backend import CommonAttentionMetadata
++from vllm.v1.kv_cache_interface import (
++    KVCacheConfig,
++    KVCacheSpec,
++    UniformTypeKVCacheSpecs,
++)
+ from vllm.v1.spec_decode.llm_base_proposer import SpecDecodeBaseProposer
+ from vllm.v1.spec_decode.utils import copy_and_expand_dflash_inputs_kernel
++from vllm.v1.worker.utils import AttentionGroup
+ 
+ logger = init_logger(__name__)
+ 
+@@ -86,6 +93,84 @@ class DFlashProposer(SpecDecodeBaseProposer):
+             ),
+         )
+ 
++    def validate_same_kv_cache_group(self, kv_cache_config: KVCacheConfig) -> None:
++        """DFlash draft layers may span sliding and full-attention groups."""
++
++    def initialize_attn_backend(
++        self,
++        kv_cache_config: KVCacheConfig,
++        kernel_block_sizes: list[int] | None = None,
++    ) -> None:
++        """Build draft attention metadata separately for every KV cache group."""
++        all_attn_layers = get_layers_from_vllm_config(
++            self.vllm_config,
++            AttentionLayerBase,  # type: ignore[type-abstract]
++        )
++
++        layer_to_gid: dict[str, int] = {}
++        layer_to_spec: dict[str, KVCacheSpec] = {}
++        for gid, group in enumerate(kv_cache_config.kv_cache_groups):
++            group_spec = group.kv_cache_spec
++            for layer_name in group.layer_names:
++                layer_to_gid[layer_name] = gid
++                if isinstance(group_spec, UniformTypeKVCacheSpecs):
++                    if layer_name in group_spec.kv_cache_specs:
++                        layer_to_spec[layer_name] = group_spec.kv_cache_specs[layer_name]
++                    else:
++                        target_name = getattr(
++                            all_attn_layers.get(layer_name),
++                            "kv_sharing_target_layer_name",
++                            None,
++                        )
++                        if target_name and target_name in group_spec.kv_cache_specs:
++                            layer_to_spec[layer_name] = group_spec.kv_cache_specs[
++                                target_name
++                            ]
++                else:
++                    layer_to_spec[layer_name] = group_spec
++
++        attention_groups: dict[
++            tuple[tuple[str, str], KVCacheSpec], AttentionGroup
++        ] = {}
++        for layer_name in self._draft_attn_layer_names:
++            if layer_name not in layer_to_spec:
++                continue
++            attn_layer = all_attn_layers[layer_name]
++            attn_backend = attn_layer.get_attn_backend()
++            kv_cache_spec = layer_to_spec[layer_name]
++            gid = layer_to_gid[layer_name]
++            group_key = (attn_backend.full_cls_name(), kv_cache_spec)
++
++            if group_key not in attention_groups:
++                kernel_block_size = (
++                    kernel_block_sizes[gid]
++                    if kernel_block_sizes is not None and gid < len(kernel_block_sizes)
++                    else None
++                )
++                attn_group = AttentionGroup(
++                    backend=attn_backend,
++                    layer_names=[layer_name],
++                    kv_cache_spec=kv_cache_spec,
++                    kv_cache_group_id=gid,
++                )
++                attn_group.create_metadata_builders(
++                    self.vllm_config,
++                    self.device,
++                    kernel_block_size=kernel_block_size,
++                )
++                attention_groups[group_key] = attn_group
++            else:
++                attention_groups[group_key].layer_names.append(layer_name)
++
++        self.draft_attn_groups = list(attention_groups.values())
++        if not self.draft_attn_groups:
++            raise RuntimeError("No KV cache groups found for DFlash draft layers")
++        self.kv_cache_gid = self.draft_attn_groups[0].kv_cache_group_id
++        self.block_size = (
++            self.draft_attn_groups[0].get_metadata_builder().kv_cache_spec.block_size
++        )
++        logger.debug("Using block size %d for drafting layers", self.block_size)
++
+     @override
+     def _warn_if_multimodal(self):
+         # Override to allow multimodal inputs since DFlash supports Qwen3.5 models
+@@ -285,17 +370,37 @@ class DFlashProposer(SpecDecodeBaseProposer):
+     def build_per_group_and_layer_attn_metadata(
+         self, cad: CommonAttentionMetadata, draft_index: int = 0
+     ) -> tuple[list[object], dict[str, object]]:
+-        per_group, per_layer = super().build_per_group_and_layer_attn_metadata(
+-            cad, draft_index
++        sliding_layer_names: set[str] = getattr(
++            self.model, "sliding_attention_layer_names", set()
+         )
+-        if not self.dflash_causal:
+-            # Require all layers to support non-causal attention when required by DFlash
+-            for layer_name, attn_metadata in per_layer.items():
+-                assert getattr(attn_metadata, "causal", None) is False, (
+-                    f"Attention metadata for layer {layer_name} does not have"
+-                    " non-causal support, which is required for DFlash."
+-                    " Consider using a different attention backend, e.g FlashAttention."
++        per_group: list[object] = []
++        per_layer: dict[str, object] = {}
++        for attn_group in self.draft_attn_groups:
++            attn_metadata = attn_group.get_metadata_builder().build_for_drafting(
++                common_attn_metadata=cad.replace(causal=False),
++                draft_index=draft_index,
++            )
++            per_group.append(attn_metadata)
++            for layer_name in attn_group.layer_names:
++                per_layer[layer_name] = attn_metadata
++
++            causal_layers = sliding_layer_names & set(attn_group.layer_names)
++            if causal_layers:
++                causal_attn_metadata = (
++                    attn_group.get_metadata_builder().build_for_drafting(
++                        common_attn_metadata=cad.replace(causal=True),
++                        draft_index=draft_index,
++                    )
+                 )
++                for layer_name in causal_layers:
++                    per_layer[layer_name] = causal_attn_metadata
++
++        for layer_name, attn_metadata in per_layer.items():
++            expected_causal = layer_name in sliding_layer_names
++            assert getattr(attn_metadata, "causal", None) is expected_causal, (
++                f"Attention metadata causality for DFlash layer {layer_name} "
++                f"must be {expected_causal}."
++            )
+         return per_group, per_layer
+ 
+     @override
+diff --git a/vllm/v1/worker/gpu/model_states/mamba_hybrid.py b/vllm/v1/worker/gpu/model_states/mamba_hybrid.py
+index 1e327b33f5..0c3b2a62f6 100644
+--- a/vllm/v1/worker/gpu/model_states/mamba_hybrid.py
++++ b/vllm/v1/worker/gpu/model_states/mamba_hybrid.py
+@@ -79,11 +79,12 @@ class MambaHybridModelState(DefaultModelState):
+         self.num_accepted_tokens_gpu = torch.ones(
+             self.max_num_reqs, dtype=torch.int32, device=self.device
+         )
+-        # Pre-copy "align" prefix-cache state (V2). The migration of each
+-        # request's mamba state across block boundaries runs as a fused GPU
+-        # kernel reusing the postprocess copy machinery, so the per-step src
+-        # columns and the running state_idx are kept GPU-resident.
+-        self._align_mode = self.cache_config.mamba_cache_mode == "align"
++        # Speculative decoding needs explicit recurrent-state migration across
++        # aligned cache blocks. Preserve vLLM's stock plain-decoding path.
++        self._align_mode = (
++            vllm_config.num_speculative_tokens > 0
++            and self.cache_config.mamba_cache_mode == "align"
++        )
+         if self._align_mode:
+             self._mamba_state_idx_gpu = torch.zeros(
+                 self.max_num_reqs, dtype=torch.int32, device=self.device
+@@ -221,6 +222,7 @@ class MambaHybridModelState(DefaultModelState):
+         slot_mappings: torch.Tensor,
+         attn_groups: list[list[AttentionGroup]],
+         kv_cache_config: KVCacheConfig,
++        scheduled_spec_decode_tokens: dict[str, list[int]] | None = None,
+         for_capture: bool = False,
+     ) -> dict[str, Any]:
+         if cudagraph_mode == CUDAGraphMode.FULL:
+@@ -293,10 +295,15 @@ class MambaHybridModelState(DefaultModelState):
+ 
+     def postprocess_state(
+         self,
+-        idx_mapping: torch.Tensor,
++        input_batch: InputBatch | torch.Tensor,
+         num_sampled: torch.Tensor | int,
+         num_computed_tokens: torch.Tensor | None = None,
+     ) -> None:
++        idx_mapping = (
++            input_batch.idx_mapping
++            if isinstance(input_batch, InputBatch)
++            else input_batch
++        )
+         # Chunked prefill does not sample a token, so num_sampled can be 0.
+         # Mamba treats num_accepted_tokens=1 as the neutral non-spec value.
+         if not isinstance(num_sampled, int):
+diff --git a/vllm/v1/worker/gpu_model_runner.py b/vllm/v1/worker/gpu_model_runner.py
+index 5961d35912..650ba0c3d1 100644
+--- a/vllm/v1/worker/gpu_model_runner.py
++++ b/vllm/v1/worker/gpu_model_runner.py
+@@ -5,6 +5,7 @@ import functools
+ import gc
+ import itertools
+ import threading
++import os
+ import time
+ from collections import defaultdict
+ from collections.abc import Callable, Iterable, Iterator, Sequence
+@@ -815,6 +816,39 @@ class GPUModelRunner(
+             )
+ 
+         self.uniform_decode_query_len = 1 + self.num_spec_tokens
++        self.spec_long_context_threshold: int | None = None
++        self.spec_long_context_query_len: int | None = None
++        additional_uniform_decode_query_lens: list[int] = []
++        long_context_threshold = os.getenv(
++            "VLLM_SPECULATIVE_LONG_CONTEXT_THRESHOLD"
++        )
++        long_context_tokens = os.getenv("VLLM_SPECULATIVE_LONG_CONTEXT_TOKENS")
++        if (long_context_threshold is None) != (long_context_tokens is None):
++            raise ValueError(
++                "VLLM_SPECULATIVE_LONG_CONTEXT_THRESHOLD and "
++                "VLLM_SPECULATIVE_LONG_CONTEXT_TOKENS must be set together."
++            )
++        if long_context_threshold is not None and long_context_tokens is not None:
++            threshold = int(long_context_threshold)
++            tokens = int(long_context_tokens)
++            if threshold <= 0:
++                raise ValueError(
++                    "VLLM_SPECULATIVE_LONG_CONTEXT_THRESHOLD must be positive."
++                )
++            if not 0 <= tokens <= self.num_spec_tokens:
++                raise ValueError(
++                    "VLLM_SPECULATIVE_LONG_CONTEXT_TOKENS must be between zero "
++                    "and the configured num_speculative_tokens."
++                )
++            self.spec_long_context_threshold = threshold
++            self.spec_long_context_query_len = tokens + 1
++            if self.spec_long_context_query_len != self.uniform_decode_query_len:
++                additional_uniform_decode_query_lens.append(
++                    self.spec_long_context_query_len
++                )
++        self.additional_uniform_decode_query_lens = tuple(
++            additional_uniform_decode_query_lens
++        )
+ 
+         # Cudagraph dispatcher for runtime cudagraph dispatching.
+         self.cudagraph_dispatcher = CudagraphDispatcher(self.vllm_config)
+@@ -3831,6 +3865,7 @@ class GPUModelRunner(
+         force_has_lora: bool | None = None,
+         force_num_active_loras: int | None = None,
+         num_encoder_reqs: int = 0,
++        uniform_decode_query_len: int | None = None,
+     ) -> tuple[
+         CUDAGraphMode,
+         BatchDescriptor,
+@@ -3838,9 +3873,14 @@ class GPUModelRunner(
+         torch.Tensor | None,
+         CUDAGraphStat | None,
+     ]:
++        effective_uniform_decode_query_len = (
++            self.uniform_decode_query_len
++            if uniform_decode_query_len is None
++            else uniform_decode_query_len
++        )
+         uniform_decode = self._is_uniform_decode(
+             max_num_scheduled_tokens=max_num_scheduled_tokens,
+-            uniform_decode_query_len=self.uniform_decode_query_len,
++            uniform_decode_query_len=effective_uniform_decode_query_len,
+             num_tokens=num_tokens,
+             num_reqs=num_reqs,
+             force_uniform_decode=force_uniform_decode,
+@@ -3869,6 +3909,7 @@ class GPUModelRunner(
+                 num_active_loras=num_active_loras,
+                 valid_modes={CUDAGraphMode.NONE} if force_eager else valid_modes,
+                 invalid_modes={CUDAGraphMode.FULL} if disable_full else None,
++                uniform_decode_query_len=effective_uniform_decode_query_len,
+             )
+ 
+         cudagraph_mode, batch_descriptor = dispatch_cudagraph(
+@@ -4149,6 +4190,25 @@ class GPUModelRunner(
+                     scheduler_output.num_common_prefix_blocks,
+                 )
+ 
++            active_uniform_decode_query_len = None
++            if (
++                self.spec_long_context_threshold is not None
++                and self.spec_long_context_query_len is not None
++                and num_reqs > 0
++            ):
++                num_computed_tokens = (
++                    self.input_batch.num_computed_tokens_cpu[:num_reqs]
++                )
++                num_prompt_tokens = self.input_batch.num_prompt_tokens[:num_reqs]
++                if (
++                    np.all(num_computed_tokens >= num_prompt_tokens)
++                    and int(num_computed_tokens.max())
++                    >= self.spec_long_context_threshold
++                ):
++                    active_uniform_decode_query_len = (
++                        self.spec_long_context_query_len
++                    )
++
+             (
+                 cudagraph_mode,
+                 batch_desc,
+@@ -4162,6 +4222,7 @@ class GPUModelRunner(
+                 max_num_scheduled_tokens=max_num_scheduled_tokens,
+                 use_cascade_attn=cascade_attn_prefix_lens is not None,
+                 num_encoder_reqs=len(scheduler_output.scheduled_encoder_inputs),
++                uniform_decode_query_len=active_uniform_decode_query_len,
+             )
+ 
+             logger.debug(
+@@ -5670,6 +5731,7 @@ class GPUModelRunner(
+         cudagraph_runtime_mode: CUDAGraphMode | None = None,
+         force_attention: bool = False,
+         uniform_decode: bool = False,
++        uniform_decode_query_len: int | None = None,
+         allow_microbatching: bool = True,
+         skip_eplb: bool = False,
+         is_profile: bool = False,
+@@ -5730,7 +5792,11 @@ class GPUModelRunner(
+         # When setting max_query_len = 1, we switch to and capture the optimized
+         # routine of FA2 for pure decode, i.e., Flashdecode + an optimization
+         # for GQA/MQA.
+-        max_query_len = self.uniform_decode_query_len if uniform_decode else num_tokens
++        max_query_len = (
++            self.uniform_decode_query_len
++            if uniform_decode_query_len is None
++            else uniform_decode_query_len
++        ) if uniform_decode else num_tokens
+ 
+         # Set num_scheduled_tokens based on num_tokens and max_num_seqs
+         # for dummy run with LoRA so that the num_reqs collectively
+@@ -5790,6 +5856,7 @@ class GPUModelRunner(
+                 # `force_num_active_loras` is used for cudagraph capture; because we
+                 # need to capture graphs for specific num_active_loras counts
+                 force_num_active_loras=num_active_loras,
++                uniform_decode_query_len=max_query_len,
+             )
+         )
+ 
+@@ -6667,6 +6734,11 @@ class GPUModelRunner(
+     ):
+         if num_warmups is None:
+             num_warmups = self.compilation_config.cudagraph_num_of_warmups
++        uniform_decode_query_len = None
++        if desc.uniform:
++            assert desc.num_reqs is not None and desc.num_reqs > 0
++            assert desc.num_tokens % desc.num_reqs == 0
++            uniform_decode_query_len = desc.num_tokens // desc.num_reqs
+         force_attention = cudagraph_runtime_mode == CUDAGraphMode.FULL
+         for _ in range(num_warmups):
+             self._dummy_run(
+@@ -6674,6 +6746,7 @@ class GPUModelRunner(
+                 cudagraph_runtime_mode=CUDAGraphMode.NONE,
+                 force_attention=force_attention,
+                 uniform_decode=desc.uniform,
++                uniform_decode_query_len=uniform_decode_query_len,
+                 allow_microbatching=allow_microbatching,
+                 skip_eplb=True,
+                 remove_lora=False,
+@@ -6684,6 +6757,7 @@ class GPUModelRunner(
+             desc.num_tokens,
+             cudagraph_runtime_mode=cudagraph_runtime_mode,
+             uniform_decode=desc.uniform,
++            uniform_decode_query_len=uniform_decode_query_len,
+             allow_microbatching=allow_microbatching,
+             skip_eplb=True,
+             remove_lora=False,
+@@ -6919,10 +6993,34 @@ class GPUModelRunner(
+             self.max_num_reqs,
+             is_profiling=is_profiling,
+         )
++        if (
++            cudagraph_mode.decode_mode() == CUDAGraphMode.FULL
++            and self.additional_uniform_decode_query_lens
++            and self.compilation_config.cudagraph_capture_sizes is not None
++            and self.compilation_config.max_cudagraph_capture_size is not None
++        ):
++            additional_capture_sizes = [
++                query_len
++                for query_len in self.additional_uniform_decode_query_lens
++                if query_len
++                <= self.compilation_config.max_cudagraph_capture_size
++            ]
++            if additional_capture_sizes:
++                self.compilation_config.cudagraph_capture_sizes = sorted(
++                    set(self.compilation_config.cudagraph_capture_sizes)
++                    | set(additional_capture_sizes)
++                )
++                logger.info(
++                    "Added CUDA graph capture sizes %s for dynamic speculative "
++                    "decode at concurrency one.",
++                    additional_capture_sizes,
++                )
+         # Trigger cudagraph dispatching keys initialization after
+         # resolved cudagraph mode.
+         self.cudagraph_dispatcher.initialize_cudagraph_keys(
+-            cudagraph_mode, self.uniform_decode_query_len
++            cudagraph_mode,
++            self.uniform_decode_query_len,
++            self.additional_uniform_decode_query_lens,
+         )
+ 
+         # Initialize drafter's cudagraph dispatcher if using spec decode.

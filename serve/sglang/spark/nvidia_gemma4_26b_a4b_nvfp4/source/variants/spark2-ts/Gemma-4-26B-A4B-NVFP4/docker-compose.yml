@@ -1,0 +1,47 @@
+services:
+  gemma4-26b-nvfp4:
+    image: sglang:gemma4-dflash
+    container_name: sglang-gemma4-26b-nvfp4
+    restart: "no"
+    ports:
+      - "8001:30000"
+    ipc: host
+    shm_size: 32g
+    volumes:
+      - ${HOME}/models:/models
+    environment:
+      HF_HOME: /models
+      FLASHINFER_DISABLE_VERSION_CHECK: "1"
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
+    command:
+      - python3
+      - -m
+      - sglang.launch_server
+      - --model-path
+      - nvidia/Gemma-4-26B-A4B-NVFP4
+      - --host
+      - 0.0.0.0
+      - --port
+      - "30000"
+      - --served-model-name
+      - Gemma-4-26B-A4B-NVFP4
+      - --trust-remote-code
+      - --tp-size
+      - "1"
+      - --attention-backend
+      - triton
+      - --context-length
+      - "262144"
+      - --mem-fraction-static
+      - "0.85"
+      - --enable-metrics
+      - --max-running-requests
+      - "8"
+      - --chunked-prefill-size
+      - "2048"

@@ -1,0 +1,8 @@
+name	upstream	revision	target	managed_commit
+vllm-0.24-dflash-depth-matrix	https://github.com/vllm-project/vllm.git	ee0da84ab9e04ac7610e28580af62c365e898389	patches/vllm-0.24-dflash-depth-matrix	489eb1aee32242adbe11f6b09c7cbeadf815eeb9
+vllm-0.24-align-upstream	https://github.com/vllm-project/vllm.git	ee0da84ab9e04ac7610e28580af62c365e898389	patches/vllm-0.24-align-upstream	4615c8a9767db20d8654b3d96800cef5f95acd30
+gorilla-bfcl	https://github.com/ShishirPatil/gorilla.git	6ea57973c7a6097fd7c5915698c54c17c5b1b6c8	benchmarks/gorilla	48b5c3d235d95488c49461718f8abbfa802661a7
+aider	https://github.com/Aider-AI/aider.git	3ec8ec5a7d695b08a6c24fe6c0c235c8f87df9af	benchmarks/aider	f005025ad88cd16a6447877bb077712c8f5c48e0
+deepseek-responses-proxy	https://github.com/holo-q/deepseek-responses-proxy.git	c98e6cbb610800c37e1d0594b4caa6cd17d05251	benchmarks/deepseek-responses-proxy	174deedeb305bb751354d14c23dbafbb9add3905
+codex-shim-sybil	https://github.com/sybil-solutions/codex-shim.git	b8116262d76b6904a017211f3dcec901c38cdf6b	tools/codex-shim/src	c1bfd5a0a63530933a00c1df0fd6c32e890dd5c1
+codex-shim-sero	https://github.com/0xSero/codex-shim	b8116262d76b6904a017211f3dcec901c38cdf6b	tools/codex-shim/setup/codex-shim	f9a96ec9071b111bdcf7319a5e6ee5d594fdfc76

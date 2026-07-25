@@ -1,0 +1,29 @@
+services:
+  qwen36-27b-fp8:
+    image: vllm-latest:0.21.0
+    container_name: vllm-qwen36-27b-fp8
+    restart: "no"
+    ports:
+      - "8000:8000"
+    ipc: host
+    shm_size: 32g
+    volumes:
+      - ${HOME}/models:/models
+    environment:
+      HF_TOKEN: ${HF_TOKEN}
+      HF_HOME: /models
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
+    command: >
+      --model /models/hub/models--Qwen--Qwen3.6-27B-FP8/snapshots/e89b16ebf1988b3d6befa7de50abc2d76f26eb09
+      --served-model-name Qwen3.6-27B-FP8
+      --host 0.0.0.0
+      --port 8000
+      --max-model-len 262144
+      --gpu-memory-utilization 0.85
+      --max-num-batched-tokens 262144
