@@ -216,6 +216,7 @@ def install_node_fakes(fake_bin: pathlib.Path) -> None:
         fake_bin / "ip",
         """#!/usr/bin/env bash
 if [[ "$*" == *"link show dev"* ]]; then
+  [[ "${@: -1}" == enp1s0f1np1 ]] || exit 1
   printf '2: %s: <UP> mtu 9000 state UP\n' "${@: -1}"
 elif [[ "$*" == *"-4 -o addr show"* ]]; then
   printf '%s\n' '2: enp1s0f1np1 inet 10.0.0.1/24 scope global' '3: enp1s0f1np1 inet 10.0.0.2/24 scope global'

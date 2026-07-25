@@ -190,7 +190,6 @@ preflight() {
   [[ "${gpu_names[0]}" == *"GB10"* || "${gpu_names[0]}" == *"DGX Spark"* ]] || fail "expected one GB10/DGX Spark GPU, found '${gpu_names[0]}'"
   ip link show dev "$DIST_IF" | grep -q 'state UP' || fail "$DIST_IF is not UP"
   ip -4 -o addr show dev "$DIST_IF" | grep -Eq "[[:space:]]inet[[:space:]]+$NODE_ADDR/" || fail "$DIST_IF does not own $NODE_ADDR"
-  ip link show dev "$RDMA_HCA" >/dev/null 2>&1 || fail "$RDMA_HCA is absent"
   ibv_devinfo -d "$RDMA_HCA" >/dev/null 2>&1 || fail "$RDMA_HCA is not an RDMA device"
   docker image inspect "$IMAGE" >/dev/null 2>&1 || fail "image '$IMAGE' is unavailable"
   ! docker container inspect "$CONTAINER" >/dev/null 2>&1 || fail "container '$CONTAINER' already exists"
