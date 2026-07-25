@@ -19,13 +19,13 @@ from dgx_dashboard.monitoring.system import SystemAdapters, SystemMonitor
 
 def test_gpu_csv_preserves_literal_headers_and_types():
     header = "index, name, utilization.gpu [%], memory.used [MiB], temperature.memory"
-    raw = "0, NVIDIA RTX PRO 6000, 42 %, 1234 MiB, [N/A]"
+    raw = "0, NVIDIA RTX PRO 6000 Blackwell Workstation Edition, 42 %, 1234 MiB, [N/A]"
 
     assert parse_gpu_csv(raw, header, "local") == [
         {
             "host": "local",
             "index": 0,
-            "name": "NVIDIA RTX PRO 6000",
+            "name": "NVIDIA RTX PRO 6000 Blackwell Workstation Edition",
             "utilization.gpu [%]": 42,
             "memory.used [MiB]": 1234,
             "temperature.memory": None,

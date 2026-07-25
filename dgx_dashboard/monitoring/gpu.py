@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import concurrent.futures
-import re
 import subprocess
 from dataclasses import dataclass
 from typing import Callable, Mapping
@@ -18,6 +17,19 @@ GPU_QUERY_FIELDS = (
     "clocks.current.graphics,clocks.current.memory,"
     "vbios_version,compute_mode"
 )
+_VALUE_SUFFIXES = (
+    " %",
+    " KiB",
+    " MiB",
+    " GiB",
+    " MB",
+    " GB",
+    " W",
+    " C",
+    " kHz",
+    " MHz",
+    " GHz",
+)
 
 
 @dataclass(frozen=True)
@@ -30,7 +42,10 @@ def _coerce_value(raw: str) -> object:
     value = raw.strip()
     if value in {"[N/A]", "N/A"}:
         return None
-    value = re.sub(r"\s+[A-Za-z%]+$", "", value)
+    for suffix in _VALUE_SUFFIXES:
+        if value.endswith(suffix):
+            value = value[: -len(suffix)]
+            break
     try:
         return int(value)
     except ValueError:
