@@ -3,6 +3,10 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd -P)"
 BEFORE="$(git -C "$ROOT" status --porcelain=v1 --untracked-files=all)"
 
+while IFS= read -r -d '' script; do
+  bash -n "$ROOT/$script"
+done < <(git -C "$ROOT" ls-files -z -- '*.sh')
+
 "$ROOT/tests/bootstrap.sh"
 "$ROOT/tests/dispatcher.sh"
 "$ROOT/tests/runtime.sh"

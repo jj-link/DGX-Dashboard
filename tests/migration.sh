@@ -32,6 +32,10 @@ NO_DESTINATION_DISPOSITIONS = {"archive-only", "generated-ignore"}
 HOSTS = {"wsl", "spark1-ts", "spark2-ts", "spark3-ts"}
 HEX64 = re.compile(r"[0-9a-f]{64}\Z")
 LOCAL_SOURCE_ROOT = PurePosixPath("/home/workbench/inference")
+REMOTE_SOURCE_ROOT = PurePosixPath("/home/jjlink/inference")
+REMOTE_ARCHIVE_ROOT = PurePosixPath(
+    "/home/jjlink/inference.pre-standardize-20260724-c081345"
+)
 
 
 def fail(message: str) -> None:
@@ -157,6 +161,13 @@ for line_number, row in enumerate(rows, start=2):
         if not source_was_relocated:
             local_sources.append(source_record)
     elif host in remote_sources:
+        source = PurePosixPath(source_path)
+        try:
+            relative_source = source.relative_to(REMOTE_SOURCE_ROOT)
+        except ValueError:
+            relative_source = None
+        if relative_source is not None:
+            source_record["path"] = str(REMOTE_ARCHIVE_ROOT.joinpath(*relative_source.parts))
         remote_sources[host].append(source_record)
 
 
