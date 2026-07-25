@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import importlib.util
 import os
 import pathlib
 import shlex
@@ -12,6 +13,7 @@ import tempfile
 ROOT = pathlib.Path(__file__).resolve().parents[1]
 PARSER = ROOT / "tools" / "parse-runtime-env.py"
 SERVE = ROOT / "serve.sh"
+BENCHMARK = ROOT / "benchmark.sh"
 KEYS = (
     "IMAGE", "MODEL", "MODEL_REVISION", "MODEL_HOST_PATH", "SERVED",
     "DRAFTER", "DRAFTER_REVISION", "DRAFTER_HOST_PATH", "TOKENIZER",
@@ -247,6 +249,128 @@ def test_dispatcher() -> None:
             assert "escapes" in rejected.stderr
         finally:
             escape.unlink()
+
+
+def test_benchmark_dispatcher() -> None:
+    with tempfile.TemporaryDirectory() as temporary:
+        temp = pathlib.Path(temporary)
+        fake_bin = temp / "bin"
+        fake_bin.mkdir()
+        ssh_log = temp / "ssh.log"
+        python_log = temp / "python.json"
+        (fake_bin / "ssh").write_text(
+            "#!/usr/bin/env bash\n"
+            f"printf '%s\\0' \"$@\" >{shlex.quote(str(ssh_log))}\n"
+            "printf '%s\\n' \"${SSH_ADDRESS-100.64.1.2}\"\n"
+            "exit \"${SSH_EXIT:-0}\"\n",
+            encoding="utf-8",
+        )
+        (fake_bin / "ssh").chmod(0o755)
+        (fake_bin / "python3").write_text(
+            "#!/usr/bin/python3\n"
+            "import json, os, sys\n"
+            f"json.dump({{'argv': sys.argv, 'base': os.environ.get('OPENAI_API_BASE'), "
+            f"'key': os.environ.get('OPENAI_API_KEY')}}, open({str(python_log)!r}, 'w'))\n"
+            "print('benchmark stdout')\n"
+            "print('benchmark stderr', file=sys.stderr)\n"
+            "raise SystemExit(int(os.environ.get('PYTHON_EXIT', '0')))\n",
+            encoding="utf-8",
+        )
+        (fake_bin / "python3").chmod(0o755)
+        environment = minimal_environment(temp / "home")
+        environment.update({
+            "PATH": f"{fake_bin}:/usr/bin:/bin",
+            "OPENAI_API_BASE": "http://wrong.example/v1",
+            "OPENAI_API_KEY": "do-not-send",
+        })
+
+        routes = (
+            ("local", None, "http://127.0.0.1:8000/v1"),
+            ("spark1", "spark1-ts", "http://100.64.1.2:8000/v1"),
+            ("spark2", "spark2-ts", "http://100.64.1.2:8000/v1"),
+            ("spark3", "spark3-ts", "http://100.64.1.2:8000/v1"),
+            ("cluster", "spark2-ts", "http://100.64.1.2:8888/v1"),
+        )
+        for target, host, endpoint in routes:
+            ssh_log.unlink(missing_ok=True)
+            completed = run(
+                [str(BENCHMARK), target, "oneshot", "--keywords", "value with spaces"],
+                environment,
+            )
+            assert completed.returncode == 0, completed.stderr
+            assert completed.stdout == "benchmark stdout\n"
+            assert "benchmark stderr\n" in completed.stderr
+            captured = json.loads(python_log.read_text(encoding="utf-8"))
+            assert captured["argv"][1:] == [
+                str(ROOT / "benchmarks" / "oneshot_bench.py"),
+                "--keywords",
+                "value with spaces",
+            ]
+            assert captured["base"] == endpoint
+            assert captured["key"] == "dummy"
+            if host is None:
+                assert not ssh_log.exists()
+                assert f"target={target} benchmark=oneshot endpoint={endpoint}" in completed.stderr
+            else:
+                ssh_arguments = ssh_log.read_bytes().split(b"\0")[:-1]
+                assert ssh_arguments[6].decode() == host
+                assert ssh_arguments[7].decode() == "exec tailscale ip -4"
+                assert f"target={target} host={host} benchmark=oneshot endpoint={endpoint}" in completed.stderr
+
+        custom_port = run(
+            [str(BENCHMARK), "spark1", "oneshot"],
+            {**environment, "HOST_PORT": "8123"},
+        )
+        assert custom_port.returncode == 0
+        assert json.loads(python_log.read_text())["base"] == "http://100.64.1.2:8123/v1"
+
+        help_result = run([str(BENCHMARK), "--help"], environment)
+        assert help_result.returncode == 0
+        assert "Omitting --lang runs all six" in help_result.stdout
+        assert "--num-tests N" in help_result.stdout
+
+        for command in (
+            [str(BENCHMARK)],
+            [str(BENCHMARK), "local"],
+            [str(BENCHMARK), "unknown", "oneshot"],
+            [str(BENCHMARK), "local", "unknown"],
+        ):
+            python_log.unlink(missing_ok=True)
+            rejected = run(command, environment)
+            assert rejected.returncode == 2
+            assert "usage:" in rejected.stderr
+            assert not python_log.exists()
+
+        python_log.unlink(missing_ok=True)
+        failed_ssh = run(
+            [str(BENCHMARK), "spark1", "oneshot"],
+            {**environment, "SSH_EXIT": "23"},
+        )
+        assert failed_ssh.returncode == 23
+        assert not python_log.exists()
+
+        for address in ("", "10.0.0.1", "100.1.2.3\n100.1.2.4"):
+            python_log.unlink(missing_ok=True)
+            rejected = run(
+                [str(BENCHMARK), "spark1", "oneshot"],
+                {**environment, "SSH_ADDRESS": address},
+            )
+            assert rejected.returncode == 1
+            assert not python_log.exists()
+
+        propagated = run(
+            [str(BENCHMARK), "local", "oneshot"],
+            {**environment, "PYTHON_EXIT": "19"},
+        )
+        assert propagated.returncode == 19
+
+    spec = importlib.util.spec_from_file_location("oneshot_bench_contract", ROOT / "benchmarks" / "oneshot_bench.py")
+    assert spec and spec.loader
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    assert module.result_alias(None, "poolside/Laguna S-2.1") == "poolside-Laguna-S-2.1"
+    assert module.result_alias("legacy-label", "ignored/model") == "legacy-label"
+    assert module.result_alias(None, "///") == "model"
 
 
 def write_fake_nvidia(path: pathlib.Path, output: str) -> None:
@@ -548,6 +672,7 @@ def main() -> int:
         test_remote_single_validation()
     if arguments.group in {"all", "dispatcher"}:
         test_dispatcher()
+        test_benchmark_dispatcher()
         test_gpu_detection()
         test_cluster_dispatcher_actions()
     print(f"control-plane {arguments.group}: passed")

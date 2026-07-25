@@ -306,9 +306,17 @@ def run_in_docker(prob: dict, lang: str, timeout: int, solutions: dict):
                     "stderr": f"TIMEOUT after {timeout}s"}
 
 
+def result_alias(alias: str | None, served: str) -> str:
+    """Return an explicit legacy label or a filename-safe served-model label."""
+    if alias:
+        return alias
+    safe = re.sub(r"[^A-Za-z0-9_.-]+", "-", served).strip("._-")
+    return safe or "model"
+
+
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("alias")
+    ap.add_argument("alias", nargs="?")
     ap.add_argument("--lang", default=None, choices=sorted(LANGS),
                     help="Polyglot language to benchmark (default: all languages)")
     ap.add_argument("--served-model", help="Override served-model-name")
@@ -370,6 +378,7 @@ def main():
             m = json.loads(r.read().decode())["data"][0]["id"]
             print(f"[health] served model: {m}", flush=True)
             served = args.served_model or m
+            args.alias = result_alias(args.alias, served)
     except Exception as e:
         print(f"[health] FAIL: {e}", file=sys.stderr)
         sys.exit(2)
