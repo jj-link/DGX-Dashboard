@@ -37,7 +37,7 @@ detect_profile() {
 }
 
 list_available() {
-  local engine="$1" profile="$2" destination="${3:-/dev/stderr}"
+  local engine="$1" profile="$2" destination_fd="${3:-2}"
   local metadata package
   local -a packages=()
   shopt -s nullglob
@@ -51,7 +51,7 @@ list_available() {
     {
       printf 'available %s/%s artifacts:\n' "$engine" "$profile"
       printf '  %s\n' "${packages[@]}" | LC_ALL=C sort
-    } >"$destination"
+    } >&"$destination_fd"
   fi
 }
 
@@ -111,8 +111,8 @@ if [[ "${1:-}" == -h || "${1:-}" == --help ]]; then
   profile="$(detect_profile)"
   usage
   printf 'selected profile: %s\n' "$profile"
-  list_available vllm "$profile" /dev/stdout
-  list_available sglang "$profile" /dev/stdout
+  list_available vllm "$profile" 1
+  list_available sglang "$profile" 1
   exit 0
 fi
 
