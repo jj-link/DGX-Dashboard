@@ -19,7 +19,7 @@ printf 'topology rank=%s world_size=%s master=%s:%s dist_if=%s rdma_hca=%s\n' \
   "${NCCL_IB_HCA:?NCCL_IB_HCA is required}"
 
 headless=()
-[[ "$RANK" == 0 ]] || headless=(--headless)
+[[ "$ENGINE" != vllm || "$RANK" == 0 ]] || headless=(--headless)
 
 case "$ENGINE/$ARTIFACT" in
   sglang/unsloth_qwen36_27b_nvfp4_dflash_tp2)

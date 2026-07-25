@@ -381,7 +381,7 @@ def test_sglang_command_contract() -> None:
         environment = {
             "PATH": f"{fake_bin}:/usr/bin:/bin",
             "COMMAND_CAPTURE": str(capture),
-            "NODE_RANK": "0",
+            "NODE_RANK": "1",
             "WORLD_SIZE": "2",
             "MASTER_ADDR": "10.0.0.1",
             "MASTER_PORT": "25001",
@@ -402,6 +402,7 @@ def test_sglang_command_contract() -> None:
         arguments = [value.decode() for value in capture.read_bytes().split(b"\0") if value]
         assert arguments[:2] == ["-m", "sglang.launch_server"]
         assert arguments[arguments.index("--served-model-name") + 1] == environment["SERVED"]
+        assert arguments[arguments.index("--node-rank") + 1] == "1"
         assert arguments[arguments.index("--max-running-requests") + 1] == "8"
         assert arguments[arguments.index("--speculative-num-draft-tokens") + 1] == "20"
         assert arguments[arguments.index("--speculative-draft-window-size") + 1] == "4096"
