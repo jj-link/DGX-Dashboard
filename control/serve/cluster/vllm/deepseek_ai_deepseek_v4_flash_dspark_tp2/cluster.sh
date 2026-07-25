@@ -12,12 +12,13 @@ shift
 [[ "$ACTION" =~ ^(start|status|logs|verify|stop)$ ]] || fail "invalid cluster action '$ACTION'"
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)"
-ROOT="$(cd "$SCRIPT_DIR/../../../.." && pwd -P)"
+CONTROL_ROOT="$(cd "$SCRIPT_DIR/../../../.." && pwd -P)"
+REPO_ROOT="$(cd "$CONTROL_ROOT/.." && pwd -P)"
 ENGINE="$(basename "$(dirname "$SCRIPT_DIR")")"
 ARTIFACT="$(basename "$SCRIPT_DIR")"
-PACKAGE="$ROOT/serve/cluster/$ENGINE/$ARTIFACT"
-PARSER="$ROOT/tools/parse-runtime-env.py"
-REMOTE_ROOT=/home/jjlink/inference
+PACKAGE="$CONTROL_ROOT/serve/cluster/$ENGINE/$ARTIFACT"
+PARSER="$CONTROL_ROOT/tools/parse-runtime-env.py"
+REMOTE_REPO_ROOT=/home/jjlink/dgx-dashboard
 HEAD_HOST=spark2-ts
 WORKER_HOST=spark3-ts
 API_PORT=8888
@@ -73,13 +74,13 @@ case "$ENGINE/$ARTIFACT" in
 esac
 
 controller_commit() {
-  [[ -d "$ROOT/.git" ]] || fail "'$ROOT' is not a Git checkout"
-  git -C "$ROOT" symbolic-ref -q HEAD >/dev/null || fail "'$ROOT' is detached"
-  [[ -z "$(git -C "$ROOT" status --porcelain --untracked-files=normal)" ]] || fail "'$ROOT' is dirty"
-  git -C "$ROOT" rev-parse HEAD
+  [[ -d "$REPO_ROOT/.git" ]] || fail "'$REPO_ROOT' is not a Git checkout"
+  git -C "$REPO_ROOT" symbolic-ref -q HEAD >/dev/null || fail "'$REPO_ROOT' is detached"
+  [[ -z "$(git -C "$REPO_ROOT" status --porcelain --untracked-files=normal)" ]] || fail "'$REPO_ROOT' is dirty"
+  git -C "$REPO_ROOT" rev-parse HEAD
 }
 
-EXPECTED_COMMIT="$(git -C "$ROOT" rev-parse HEAD 2>/dev/null || true)"
+EXPECTED_COMMIT="$(git -C "$REPO_ROOT" rev-parse HEAD 2>/dev/null || true)"
 
 run_remote() {
   local host="$1" node_action="$2" rank="$3"
@@ -90,7 +91,7 @@ run_remote() {
   [[ -z "${PREFLIGHT_REPLACE_CONTAINER+x}" ]] || command+=("PREFLIGHT_REPLACE_CONTAINER=$PREFLIGHT_REPLACE_CONTAINER")
   [[ -z "${PREFLIGHT_REPLACE_IMAGE_ID+x}" ]] || command+=("PREFLIGHT_REPLACE_IMAGE_ID=$PREFLIGHT_REPLACE_IMAGE_ID")
   [[ -z "${PREFLIGHT_REPLACE_NETWORK_MODE+x}" ]] || command+=("PREFLIGHT_REPLACE_NETWORK_MODE=$PREFLIGHT_REPLACE_NETWORK_MODE")
-  command+=("$REMOTE_ROOT/runtime/cluster/run-node.sh" "$node_action" "$ENGINE" "$ARTIFACT" "$rank")
+  command+=("$REMOTE_REPO_ROOT/control/runtime/cluster/run-node.sh" "$node_action" "$ENGINE" "$ARTIFACT" "$rank")
   local quoted='' argument
   for argument in "${command[@]}"; do
     printf -v quoted '%s %q' "$quoted" "$argument"

@@ -23,7 +23,9 @@ except ImportError:
     tqdm = None
 
 SCRIPT_DIR = Path(__file__).resolve().parent
-RESULTS_DIR = SCRIPT_DIR / "results"
+RESULTS_DIR = Path(os.environ.get(
+    "BENCHMARK_RESULTS_ROOT", "/var/lib/dgx-dashboard/benchmark-results"
+))
 AIDER_ROOT = SCRIPT_DIR / "aider"
 AIDER_PY = AIDER_ROOT / ".venv" / "bin" / "python"
 

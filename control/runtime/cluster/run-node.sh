@@ -26,9 +26,10 @@ if [[ -n "$PREFLIGHT_REPLACE_CONTAINER$PREFLIGHT_REPLACE_IMAGE_ID$PREFLIGHT_REPL
   [[ "$PREFLIGHT_REPLACE_NETWORK_MODE" =~ ^[A-Za-z0-9_.:-]+$ ]] || fail "PREFLIGHT_REPLACE_NETWORK_MODE is invalid"
 fi
 
-ROOT="${INFERENCE_ROOT:-/home/jjlink/inference}"
-PACKAGE="$ROOT/serve/cluster/$ENGINE/$ARTIFACT"
-PARSER="$ROOT/tools/parse-runtime-env.py"
+REPO_ROOT="${DGX_DASHBOARD_ROOT:-/home/jjlink/dgx-dashboard}"
+CONTROL_ROOT="$REPO_ROOT/control"
+PACKAGE="$CONTROL_ROOT/serve/cluster/$ENGINE/$ARTIFACT"
+PARSER="$CONTROL_ROOT/tools/parse-runtime-env.py"
 [[ -f "$PACKAGE/runtime.env" ]] || fail "missing cluster metadata '$PACKAGE/runtime.env'"
 [[ -x "$PARSER" ]] || fail "missing metadata parser '$PARSER'"
 
@@ -181,11 +182,11 @@ preflight() {
   command -v nvidia-smi >/dev/null 2>&1 || fail "nvidia-smi is unavailable"
   command -v ip >/dev/null 2>&1 || fail "ip is unavailable"
   command -v ibv_devinfo >/dev/null 2>&1 || fail "ibv_devinfo is unavailable"
-  [[ -d "$ROOT/.git" ]] || fail "'$ROOT' is not a Git checkout"
-  git -C "$ROOT" symbolic-ref -q HEAD >/dev/null || fail "'$ROOT' is detached"
-  [[ -z "$(git -C "$ROOT" status --porcelain --untracked-files=normal)" ]] || fail "'$ROOT' is dirty"
+  [[ -d "$REPO_ROOT/.git" ]] || fail "'$REPO_ROOT' is not a Git checkout"
+  git -C "$REPO_ROOT" symbolic-ref -q HEAD >/dev/null || fail "'$REPO_ROOT' is detached"
+  [[ -z "$(git -C "$REPO_ROOT" status --porcelain --untracked-files=normal)" ]] || fail "'$REPO_ROOT' is dirty"
   local expected_commit="${EXPECTED_COMMIT:?EXPECTED_COMMIT is required}"
-  [[ "$(git -C "$ROOT" rev-parse HEAD)" == "$expected_commit" ]] || fail "'$ROOT' is not at controller commit '$expected_commit'"
+  [[ "$(git -C "$REPO_ROOT" rev-parse HEAD)" == "$expected_commit" ]] || fail "'$REPO_ROOT' is not at controller commit '$expected_commit'"
   mapfile -t gpu_names < <(nvidia-smi --query-gpu=name --format=csv,noheader | sed '/^[[:space:]]*$/d')
   (( ${#gpu_names[@]} == 1 )) || fail "expected exactly one GPU, found ${#gpu_names[@]}"
   [[ "${gpu_names[0]}" == *"GB10"* || "${gpu_names[0]}" == *"DGX Spark"* ]] || fail "expected one GB10/DGX Spark GPU, found '${gpu_names[0]}'"
@@ -227,7 +228,7 @@ start_node() {
 
   local -a mounts=(
     -v "$MODEL_REPO_HOST:$MODEL_REPO_CONTAINER:ro"
-    -v "$ROOT:$ROOT:ro"
+    -v "$REPO_ROOT:$REPO_ROOT:ro"
     -v "${CONTAINER_BASE}-rank${RANK}-cache:/root/.cache:rw"
   )
   if [[ -n "$DRAFTER_REPO_HOST" ]]; then
@@ -317,7 +318,7 @@ start_node() {
     "${environment[@]}" \
     --entrypoint /bin/bash \
     "$IMAGE" \
-    "$ROOT/runtime/cluster/serve-node.sh" "$ENGINE" "$ARTIFACT" >/dev/null
+    "$CONTROL_ROOT/runtime/cluster/serve-node.sh" "$ENGINE" "$ARTIFACT" >/dev/null
 }
 
 wait_rank() {

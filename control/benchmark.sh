@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)"
+CONTROL_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)"
+REPO_ROOT="$(cd "$CONTROL_ROOT/.." && pwd -P)"
 
 usage() {
   cat <<'EOF'
@@ -95,4 +96,4 @@ fi
 
 export OPENAI_API_BASE="$endpoint"
 export OPENAI_API_KEY=dummy
-exec python3 "$ROOT/benchmarks/oneshot_bench.py" "$@"
+exec python3 "$CONTROL_ROOT/benchmarks/oneshot_bench.py" "$@"

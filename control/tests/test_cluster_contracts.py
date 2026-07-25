@@ -9,6 +9,7 @@ import subprocess
 import tempfile
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
+REPO_ROOT = ROOT.parent
 FRONT = ROOT / "serve.sh"
 CONTROLLER = ROOT / "serve" / "cluster" / "sglang" / "unsloth_qwen36_27b_nvfp4_dflash_tp2" / "cluster.sh"
 NODE = ROOT / "runtime" / "cluster" / "run-node.sh"
@@ -292,7 +293,7 @@ def test_node_preflight_and_launch() -> None:
         environment.update({
             "DOCKER_CAPTURE": str(capture),
             "HF_CACHE": str(cache),
-            "INFERENCE_ROOT": str(ROOT),
+            "DGX_DASHBOARD_ROOT": str(REPO_ROOT),
         })
 
         for engine, artifact in packages:
@@ -365,7 +366,7 @@ def test_node_preflight_and_launch() -> None:
             assert "NCCL_DEBUG=INFO" in run_arguments
             assert "NCCL_IB_HCA=rocep1s0f1" in run_arguments
             assert "NCCL_SOCKET_IFNAME=enp1s0f1np1" in run_arguments
-            assert f"{ROOT}:{ROOT}:ro" in run_arguments
+            assert f"{REPO_ROOT}:{REPO_ROOT}:ro" in run_arguments
             assert run_arguments[-3:] == [str(ROOT / "runtime" / "cluster" / "serve-node.sh"), engine, artifact]
             assert any(value.endswith(":ro") and "models--" in value for value in run_arguments)
             if engine == "vllm":
@@ -485,7 +486,7 @@ sys.exit(1)
         environment = {
             "PATH": f"{fake_bin}:/usr/bin:/bin",
             "HOME": str(temp / "home"),
-            "INFERENCE_ROOT": str(ROOT),
+            "DGX_DASHBOARD_ROOT": str(REPO_ROOT),
         }
         completed = run(
             [str(NODE), "verify", "sglang", "unsloth_qwen36_27b_nvfp4_dflash_tp2", "1"],

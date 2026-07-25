@@ -584,14 +584,14 @@ def test_remote_single_validation() -> None:
     expected_commit = "a" * 40
     with tempfile.TemporaryDirectory() as temporary:
         temp = pathlib.Path(temporary)
-        checkout = temp / "inference"
+        checkout = temp / "dgx-dashboard"
         checkout.mkdir()
         (checkout / ".git").mkdir()
-        package = checkout / "serve" / "vllm" / "spark" / "artifact"
+        package = checkout / "control" / "serve" / "vllm" / "spark" / "artifact"
         package.mkdir(parents=True)
         write_metadata(package / "runtime.env", valid_values())
         (package / "serve.sh").write_text("#!/usr/bin/env bash\n", encoding="utf-8")
-        runtime = checkout / "runtime" / "spark"
+        runtime = checkout / "control" / "runtime" / "spark"
         runtime.mkdir(parents=True)
         marker = temp / "docker-marker"
         runner = runtime / "run_vllm_docker.sh"
@@ -601,7 +601,7 @@ def test_remote_single_validation() -> None:
         )
         runner.chmod(0o755)
         remote = temp / "run-remote-single.sh"
-        remote.write_text(source.replace("ROOT=/home/jjlink/inference", f"ROOT={shlex.quote(str(checkout))}"), encoding="utf-8")
+        remote.write_text(source.replace("REPO_ROOT=/home/jjlink/dgx-dashboard", f"REPO_ROOT={shlex.quote(str(checkout))}"), encoding="utf-8")
         remote.chmod(0o755)
 
         fake_bin = temp / "bin"

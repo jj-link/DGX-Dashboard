@@ -4,12 +4,12 @@ After=network.target
 
 [Service]
 Type=simple
-User=jjlink
-WorkingDirectory=/home/jjlink/dgx-dashboard
-ExecStart=/home/jjlink/dgx-dashboard/venv/bin/python /home/jjlink/dgx-dashboard/server.py
+User=workbench
+WorkingDirectory=/home/workbench/Projects/personal/dgx-dashboard
+ExecStart=/home/workbench/Projects/personal/dgx-dashboard/venv/bin/python /home/workbench/Projects/personal/dgx-dashboard/server.py
 Restart=on-failure
 RestartSec=5
-Environment=PATH=/home/jjlink/.local/bin:/usr/bin:/bin
+Environment=PATH=/home/workbench/.local/bin:/usr/bin:/bin
 
 [Install]
 WantedBy=multi-user.target

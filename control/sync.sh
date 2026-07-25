@@ -1,9 +1,10 @@
 #!/usr/bin/env bash
 set -uo pipefail
 
-ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)"
-REMOTE_REPO="/home/jjlink/inference"
-EXPECTED_ORIGIN="git@github.com:jj-link/inference-workspace.git"
+CONTROL_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)"
+REPO_ROOT="$(cd "$CONTROL_ROOT/.." && pwd -P)"
+REMOTE_REPO="/home/jjlink/dgx-dashboard"
+EXPECTED_ORIGIN="git@github.com:jj-link/DGX-Dashboard.git"
 CANONICAL_HOSTS=(spark1-ts spark2-ts spark3-ts)
 
 usage() {
@@ -30,12 +31,7 @@ else
   done
 fi
 
-if ! GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=url.https://github.com/.insteadOf GIT_CONFIG_VALUE_0=git@github.com: git -C "$ROOT" fetch --quiet origin main; then
-  printf 'local: failed to fetch origin/main\n' >&2
-  exit 1
-fi
-
-local_status="$(git -C "$ROOT" status --porcelain=v1 --untracked-files=normal)" || {
+local_status="$(git -C "$REPO_ROOT" status --porcelain=v1 --untracked-files=normal)" || {
   printf 'local: failed to read repository status\n' >&2
   exit 1
 }
@@ -44,7 +40,7 @@ local_status="$(git -C "$ROOT" status --porcelain=v1 --untracked-files=normal)" 
   exit 1
 }
 
-local_origin="$(git -C "$ROOT" remote get-url origin 2>/dev/null)" || {
+local_origin="$(git -C "$REPO_ROOT" remote get-url origin 2>/dev/null)" || {
   printf 'local: origin is unavailable\n' >&2
   exit 1
 }
@@ -53,42 +49,136 @@ local_origin="$(git -C "$ROOT" remote get-url origin 2>/dev/null)" || {
   exit 1
 }
 
-local_head="$(git -C "$ROOT" rev-parse HEAD)" || {
+local_branch="$(git -C "$REPO_ROOT" symbolic-ref --quiet --short HEAD)" || {
+  printf 'local: checkout is detached\n' >&2
+  exit 1
+}
+git check-ref-format --branch "$local_branch" >/dev/null 2>&1 || {
+  printf "local: branch '%s' is invalid\n" "$local_branch" >&2
+  exit 1
+}
+
+if ! GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=url.https://github.com/.insteadOf GIT_CONFIG_VALUE_0=git@github.com: \
+  git -C "$REPO_ROOT" fetch --quiet origin "$local_branch"; then
+  printf 'local: failed to fetch origin/%s\n' "$local_branch" >&2
+  exit 1
+fi
+
+local_head="$(git -C "$REPO_ROOT" rev-parse HEAD)" || {
   printf 'local: HEAD is unavailable\n' >&2
   exit 1
 }
-origin_head="$(git -C "$ROOT" rev-parse origin/main)" || {
-  printf 'local: origin/main is unavailable\n' >&2
+origin_head="$(git -C "$REPO_ROOT" rev-parse "origin/$local_branch")" || {
+  printf 'local: origin/%s is unavailable\n' "$local_branch" >&2
   exit 1
 }
 [[ "$local_head" == "$origin_head" ]] || {
-  printf "local: HEAD '%s' does not equal origin/main '%s'\n" "$local_head" "$origin_head" >&2
+  printf "local: HEAD '%s' does not equal origin/%s '%s'\n" "$local_head" "$local_branch" "$origin_head" >&2
   exit 1
 }
 
 overall=0
 for host in "${targets[@]}"; do
-  output="$({ ssh -o BatchMode=yes "$host" bash -s -- "$REMOTE_REPO" "$EXPECTED_ORIGIN" <<'REMOTE'
+  output="$({ ssh -o BatchMode=yes -o ConnectTimeout=20 -o NumberOfPasswordPrompts=0 \
+    "$host" bash -s -- "$REMOTE_REPO" "$EXPECTED_ORIGIN" "$local_branch" "$local_head" "$host" <<'REMOTE'
 set -euo pipefail
 repo="$1"
 expected_origin="$2"
+expected_branch="$3"
+expected_commit="$4"
+host="$5"
+legacy_backup="${repo}.legacy-pre-unified-20260725"
+clone_path="${repo}.clone-in-progress"
+moved_legacy=0
+cloning=0
 
 fail() {
   printf '%s\n' "$*" >&2
   exit 1
 }
 
-git -C "$repo" rev-parse --git-dir >/dev/null 2>&1 || fail "checkout '$repo' is not a Git repository"
-git -C "$repo" symbolic-ref --quiet HEAD >/dev/null || fail "checkout '$repo' is detached"
-status="$(git -C "$repo" status --porcelain=v1 --untracked-files=normal)" || fail "cannot read checkout status"
+cleanup() {
+  rc=$?
+  if (( rc != 0 )); then
+    if (( cloning )) && [[ -e "$clone_path" || -L "$clone_path" ]]; then
+      rm -rf -- "$clone_path"
+    fi
+    if (( moved_legacy )) && [[ ! -e "$repo" && ! -L "$repo" ]]; then
+      mv -- "$legacy_backup" "$repo"
+    fi
+  fi
+  exit "$rc"
+}
+trap cleanup EXIT
+
+is_checkout() {
+  git -C "$1" rev-parse --is-inside-work-tree >/dev/null 2>&1
+}
+
+if [[ -e "$repo" || -L "$repo" ]]; then
+  if ! is_checkout "$repo"; then
+    [[ "$host" == spark1-ts ]] || fail "path '$repo' exists and is not a Git checkout"
+    [[ ! -e "$legacy_backup" && ! -L "$legacy_backup" ]] ||
+      fail "legacy backup '$legacy_backup' already exists; refusing to overwrite it"
+    mv -- "$repo" "$legacy_backup"
+    moved_legacy=1
+  fi
+fi
+
+if [[ ! -e "$repo" && ! -L "$repo" ]]; then
+  [[ -d "${repo%/*}" && -w "${repo%/*}" ]] ||
+    fail "checkout parent '${repo%/*}' is not a writable directory"
+  [[ ! -e "$clone_path" && ! -L "$clone_path" ]] ||
+    fail "stale clone path '$clone_path' exists"
+  cloning=1
+  GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=url.https://github.com/.insteadOf \
+    GIT_CONFIG_VALUE_0=git@github.com: \
+    git clone --quiet --origin origin --branch "$expected_branch" --single-branch \
+      "$expected_origin" "$clone_path" || fail "clone failed"
+  clone_origin="$(git -C "$clone_path" remote get-url origin 2>/dev/null)" ||
+    fail "new checkout has no origin"
+  [[ "$clone_origin" == "$expected_origin" ]] ||
+    fail "new checkout origin is '$clone_origin'; expected '$expected_origin'"
+  clone_branch="$(git -C "$clone_path" symbolic-ref --quiet --short HEAD)" ||
+    fail "new checkout is detached"
+  [[ "$clone_branch" == "$expected_branch" ]] ||
+    fail "new checkout branch is '$clone_branch'; expected '$expected_branch'"
+  clone_head="$(git -C "$clone_path" rev-parse HEAD)" ||
+    fail "new checkout HEAD is unavailable"
+  [[ "$clone_head" == "$expected_commit" ]] ||
+    fail "new checkout HEAD is '$clone_head'; expected '$expected_commit'"
+  mv -- "$clone_path" "$repo"
+  cloning=0
+  trap - EXIT
+  git -C "$repo" rev-parse HEAD
+  exit 0
+fi
+
+is_checkout "$repo" || fail "checkout '$repo' is not a Git repository"
+current_branch="$(git -C "$repo" symbolic-ref --quiet --short HEAD)" ||
+  fail "checkout '$repo' is detached"
+[[ "$current_branch" == "$expected_branch" ]] ||
+  fail "checkout '$repo' is on branch '$current_branch'; expected '$expected_branch'"
+status="$(git -C "$repo" status --porcelain=v1 --untracked-files=normal)" ||
+  fail "cannot read checkout status"
 [[ -z "$status" ]] || fail "checkout '$repo' is dirty"
-origin="$(git -C "$repo" remote get-url origin 2>/dev/null)" || fail "checkout '$repo' has no origin"
-[[ "$origin" == "$expected_origin" ]] || fail "origin is '$origin'; expected '$expected_origin'"
-git -C "$repo" fetch --quiet origin main || fail "fetch origin/main failed"
-git -C "$repo" merge --quiet --ff-only origin/main || fail "fast-forward merge failed"
-status="$(git -C "$repo" status --porcelain=v1 --untracked-files=normal)" || fail "cannot read post-merge status"
+origin="$(git -C "$repo" remote get-url origin 2>/dev/null)" ||
+  fail "checkout '$repo' has no origin"
+[[ "$origin" == "$expected_origin" ]] ||
+  fail "origin is '$origin'; expected '$expected_origin'"
+GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=url.https://github.com/.insteadOf \
+  GIT_CONFIG_VALUE_0=git@github.com: \
+  git -C "$repo" fetch --quiet origin "$expected_branch" ||
+  fail "fetch origin/$expected_branch failed"
+git -C "$repo" merge --quiet --ff-only "origin/$expected_branch" ||
+  fail "fast-forward merge failed"
+status="$(git -C "$repo" status --porcelain=v1 --untracked-files=normal)" ||
+  fail "cannot read post-merge status"
 [[ -z "$status" ]] || fail "checkout '$repo' is dirty after merge"
-git -C "$repo" rev-parse HEAD
+head="$(git -C "$repo" rev-parse HEAD)" || fail "checkout HEAD is unavailable"
+[[ "$head" == "$expected_commit" ]] ||
+  fail "checkout HEAD is '$head'; expected '$expected_commit'"
+printf '%s\n' "$head"
 REMOTE
   } 2>&1)"
   if (($? == 0)); then

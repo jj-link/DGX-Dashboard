@@ -1,12 +1,14 @@
 #!/usr/bin/env bash
 set -euo pipefail
-cd /home/workbench/inference/benchmarks
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)"
+cd "$SCRIPT_DIR"
 
 export OPENAI_API_BASE=http://localhost:8001/v1
 export OPENAI_API_KEY=***
-export AIDER_MODEL_SETTINGS_FILE=/home/workbench/inference/benchmarks/aider-gemma-model-settings.yml
-export AIDER_MODEL_METADATA_FILE=/home/workbench/inference/benchmarks/aider-gemma-model-metadata.json
-export XDG_CONFIG_HOME=/home/workbench/inference/benchmarks/opencode-gemma-config
+export AIDER_MODEL_SETTINGS_FILE="$SCRIPT_DIR/aider-gemma-model-settings.yml"
+export AIDER_MODEL_METADATA_FILE="$SCRIPT_DIR/aider-gemma-model-metadata.json"
+export XDG_CONFIG_HOME="$SCRIPT_DIR/opencode-gemma-config"
+export BENCHMARK_RESULTS_ROOT="${BENCHMARK_RESULTS_ROOT:-/var/lib/dgx-dashboard/benchmark-results}"
 export CONCURRENCY=1
 
 MODEL_ID=gemma-4-12b-it-UD-Q4_K_XL.gguf
@@ -87,7 +89,8 @@ echo "[gemma4090] latest summaries:"
 python3 - <<'PY'
 from pathlib import Path
 import json
-base=Path('results')
+import os
+base=Path(os.environ['BENCHMARK_RESULTS_ROOT'])
 for pattern in ['cross-agent-oneshot-*.json','cross-agent-multiturn-*.json']:
     p=max(base.glob(pattern), key=lambda x:x.stat().st_mtime)
     d=json.loads(p.read_text())

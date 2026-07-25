@@ -2,7 +2,8 @@
 # Run oneshot benchmark against local prismascout server (port 8000) with concurrency 16.
 set -uo pipefail
 
-cd /home/workbench/inference/benchmarks
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)"
+cd "$SCRIPT_DIR"
 
 BASE_URL="http://localhost:8000/v1"
 ALIAS="local-prismascout"

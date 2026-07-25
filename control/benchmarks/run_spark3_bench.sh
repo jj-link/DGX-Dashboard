@@ -3,7 +3,8 @@
 # Waits for the vLLM server to be ready, then runs all 6 languages.
 set -uo pipefail
 
-cd /home/workbench/inference/benchmarks
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)"
+cd "$SCRIPT_DIR"
 
 BASE_URL="http://100.121.117.65:8002/v1"
 ALIAS="spark3-aeon-ultimate"

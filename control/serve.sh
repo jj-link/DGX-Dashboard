@@ -1,9 +1,10 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)"
+CONTROL_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)"
+REPO_ROOT="$(cd "$CONTROL_ROOT/.." && pwd -P)"
 # shellcheck source=runtime/single-environment.sh
-source "$ROOT/runtime/single-environment.sh"
+source "$CONTROL_ROOT/runtime/single-environment.sh"
 
 usage() {
   cat <<'EOF'
@@ -46,10 +47,10 @@ require_controller_gpu() {
 }
 
 controller_commit() {
-  [[ -d "$ROOT/.git" ]] || fail "'$ROOT' is not a Git checkout"
-  git -C "$ROOT" symbolic-ref -q HEAD >/dev/null || fail "'$ROOT' is detached"
-  [[ -z "$(git -C "$ROOT" status --porcelain --untracked-files=normal)" ]] || fail "'$ROOT' is dirty"
-  git -C "$ROOT" rev-parse HEAD
+  [[ -d "$REPO_ROOT/.git" ]] || fail "'$REPO_ROOT' is not a Git checkout"
+  git -C "$REPO_ROOT" symbolic-ref -q HEAD >/dev/null || fail "'$REPO_ROOT' is detached"
+  [[ -z "$(git -C "$REPO_ROOT" status --porcelain --untracked-files=normal)" ]] || fail "'$REPO_ROOT' is dirty"
+  git -C "$REPO_ROOT" rev-parse HEAD
 }
 
 list_available() {
@@ -57,7 +58,7 @@ list_available() {
   local metadata package
   local -a packages=()
   shopt -s nullglob
-  for metadata in "$ROOT/serve/$engine/$profile"/*/runtime.env; do
+  for metadata in "$CONTROL_ROOT/serve/$engine/$profile"/*/runtime.env; do
     package="$(dirname "$metadata")"
     [[ -f "$package/serve.sh" ]] || continue
     packages+=("$(basename "$package")")
@@ -76,7 +77,7 @@ list_cluster() {
   local package required
   local -a packages=()
   shopt -s nullglob
-  for package in "$ROOT/serve/cluster/$engine"/*; do
+  for package in "$CONTROL_ROOT/serve/cluster/$engine"/*; do
     [[ -d "$package" && -f "$package/runtime.env" ]] || continue
     for required in start status logs verify stop; do
       [[ -x "$package/$required.sh" ]] || continue 2
@@ -95,7 +96,7 @@ list_cluster() {
 resolve_single_script() {
   local engine="$1" profile="$2" artifact="$3"
   local base candidate package script
-  base="$(realpath -e "$ROOT/serve/$engine/$profile")"
+  base="$(realpath -e "$CONTROL_ROOT/serve/$engine/$profile")"
   candidate="$base/$artifact"
   if [[ ! -d "$candidate" || ! -f "$candidate/runtime.env" || ! -f "$candidate/serve.sh" ]]; then
     printf "error: no %s %s recipe named '%s'\n" "$profile" "$engine" "$artifact" >&2
@@ -111,7 +112,7 @@ resolve_single_script() {
 resolve_cluster_script() {
   local engine="$1" artifact="$2" action="$3"
   local base candidate package script
-  base="$(realpath -e "$ROOT/serve/cluster/$engine")"
+  base="$(realpath -e "$CONTROL_ROOT/serve/cluster/$engine")"
   candidate="$base/$artifact"
   if [[ ! -d "$candidate" || ! -f "$candidate/runtime.env" || ! -f "$candidate/$action.sh" ]]; then
     printf "error: no cluster %s recipe named '%s'\n" "$engine" "$artifact" >&2
@@ -169,7 +170,7 @@ if [[ "$target" == local ]]; then
   package="${resolved[0]}"
   script="${resolved[1]}"
   printf 'target=local profile=rtx6000 engine=%s artifact=%s script=%s\n' "$engine" "$artifact" "$script" >&2
-  exec "$ROOT/runtime/rtx6000/run_${engine}_docker.sh" "$package" "$@"
+  exec "$CONTROL_ROOT/runtime/rtx6000/run_${engine}_docker.sh" "$package" "$@"
 fi
 
 case "$target" in
@@ -186,7 +187,7 @@ command=(env)
 for variable in "${single_control_environment[@]}" "${single_engine_environment[@]}"; do
   [[ -v "$variable" ]] && command+=("$variable=${!variable}")
 done
-command+=(/home/jjlink/inference/runtime/spark/run-remote-single.sh "$expected_commit" "$engine" "$artifact" "$@")
+command+=(/home/jjlink/dgx-dashboard/control/runtime/spark/run-remote-single.sh "$expected_commit" "$engine" "$artifact" "$@")
 quoted=''
 for argument in "${command[@]}"; do
   printf -v quoted '%s %q' "$quoted" "$argument"

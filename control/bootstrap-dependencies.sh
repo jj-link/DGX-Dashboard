@@ -1,9 +1,10 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)"
-MANIFEST="${DEPENDENCY_MANIFEST:-$SCRIPT_DIR/dependencies/manifest.tsv}"
-DEPENDENCY_ROOT="${DEPENDENCY_ROOT:-$SCRIPT_DIR}"
+CONTROL_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)"
+REPO_ROOT="$(cd "$CONTROL_ROOT/.." && pwd -P)"
+MANIFEST="${DEPENDENCY_MANIFEST:-$CONTROL_ROOT/dependencies/manifest.tsv}"
+DEPENDENCY_ROOT="${DEPENDENCY_ROOT:-$CONTROL_ROOT}"
 
 fail() {
   printf 'error: %s\n' "$*" >&2
@@ -48,7 +49,7 @@ while IFS=$'\t' read -r name upstream revision target managed_commit extra <&3; 
     requested["$name"]=1
   fi
 
-  package="$SCRIPT_DIR/dependencies/$name"
+  package="$CONTROL_ROOT/dependencies/$name"
   target_abs="$DEPENDENCY_ROOT/$target"
 
   if [[ -e "$target_abs" || -L "$target_abs" ]]; then

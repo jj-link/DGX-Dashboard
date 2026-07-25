@@ -5,11 +5,12 @@ fail() { printf 'error: %s
 ' "$*" >&2; exit 1; }
 [[ $# == 1 ]] || fail "usage: images/build-image.sh <target>"
 TARGET="$1"
-ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd -P)"
+CONTROL_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd -P)"
+REPO_ROOT="$(cd "$CONTROL_ROOT/.." && pwd -P)"
 command -v git >/dev/null 2>&1 || fail "git is required"
 command -v docker >/dev/null 2>&1 || fail "docker is required"
-git -C "$ROOT" rev-parse --is-inside-work-tree >/dev/null 2>&1 || fail "workspace is not a Git checkout"
-[[ -z "$(git -C "$ROOT" status --porcelain=v1 --untracked-files=all)" ]] || fail "workspace is dirty; refusing image build"
+git -C "$REPO_ROOT" rev-parse --is-inside-work-tree >/dev/null 2>&1 || fail "workspace is not a Git checkout"
+[[ -z "$(git -C "$REPO_ROOT" status --porcelain=v1 --untracked-files=all)" ]] || fail "workspace is dirty; refusing image build"
 
 dependencies=()
 case "$TARGET" in
@@ -29,6 +30,6 @@ case "$TARGET" in
   *) fail "unknown image target '$TARGET'" ;;
 esac
 if ((${#dependencies[@]})); then
-  "$ROOT/bootstrap-dependencies.sh" "${dependencies[@]}"
+  "$CONTROL_ROOT/bootstrap-dependencies.sh" "${dependencies[@]}"
 fi
-exec docker build --pull=false --tag "$tag" --file "$ROOT/images/$dockerfile/Dockerfile" "$ROOT"
+exec docker build --pull=false --tag "$tag" --file "$CONTROL_ROOT/images/$dockerfile/Dockerfile" "$CONTROL_ROOT"

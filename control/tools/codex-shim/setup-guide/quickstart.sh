@@ -4,7 +4,9 @@
 
 set -euo pipefail
 
-CODEX_SHIM_REPO="/home/workbench/inference/benchmarks/codex-shim"
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)"
+CONTROL_ROOT="$(cd "$SCRIPT_DIR/../../.." && pwd -P)"
+CODEX_SHIM_REPO="$CONTROL_ROOT/tools/codex-shim/setup/codex-shim"
 SETTINGS_FILE="$HOME/.codex-shim/models.json"
 
 echo "=== Codex Local Setup ==="
@@ -36,7 +38,6 @@ echo "[OK] codex-shim installed: $(which codex-shim)"
 # 4. Create settings if missing
 if [ ! -f "$SETTINGS_FILE" ]; then
     mkdir -p "$HOME/.codex-shim"
-    SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
     cp "$SCRIPT_DIR/example-models.json" "$SETTINGS_FILE"
     echo "[OK] Created $SETTINGS_FILE from example"
     echo "     -> Edit it with your actual API keys before proceeding"

@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 # Run oneshot benchmark against spark3 Ornith-1.0-35B-NVFP4 (port 8000) with concurrency 16.
 set -uo pipefail
-cd /home/workbench/inference/benchmarks
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)"
+cd "$SCRIPT_DIR"
 BASE_URL="http://100.121.117.65:8000/v1"
 ALIAS="spark3-ornith-35b-nvfp4"
 CONCURRENCY=16
