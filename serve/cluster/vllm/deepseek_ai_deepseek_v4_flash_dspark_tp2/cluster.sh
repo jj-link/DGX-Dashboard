@@ -226,10 +226,12 @@ start_cluster() {
   fi
   CREATED_HEAD=1
   if ! wait_api; then
+    logs_cluster || true
     cleanup_new || true
     fail "cluster API did not become ready"
   fi
   if ! verify_cluster; then
+    logs_cluster || true
     cleanup_new || true
     fail "cluster verification failed"
   fi

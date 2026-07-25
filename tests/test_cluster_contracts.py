@@ -12,6 +12,7 @@ ROOT = pathlib.Path(__file__).resolve().parents[1]
 FRONT = ROOT / "serve.sh"
 CONTROLLER = ROOT / "serve" / "cluster" / "sglang" / "unsloth_qwen36_27b_nvfp4_dflash_tp2" / "cluster.sh"
 NODE = ROOT / "runtime" / "cluster" / "run-node.sh"
+SERVE_NODE = ROOT / "runtime" / "cluster" / "serve-node.sh"
 COMMIT = "a" * 40
 
 
@@ -347,9 +348,11 @@ def test_node_preflight_and_launch() -> None:
             expected_api = "100.64.0.8" if rank == "0" else "127.0.0.1"
             assert f"API_HOST={expected_api}" in run_arguments
             assert "HOME=/root/.cache" in run_arguments
+            assert "CUDA_VISIBLE_DEVICES=0" in run_arguments
             assert "WORLD_SIZE=2" in run_arguments
             assert f"NODE_RANK={rank}" in run_arguments
             assert "NCCL_NET=IB" in run_arguments
+            assert "NCCL_DEBUG=INFO" in run_arguments
             assert "NCCL_IB_HCA=rocep1s0f1" in run_arguments
             assert "NCCL_SOCKET_IFNAME=enp1s0f1np1" in run_arguments
             assert f"{ROOT}:{ROOT}:ro" in run_arguments
@@ -361,12 +364,57 @@ def test_node_preflight_and_launch() -> None:
             else:
                 assert "DRAFTER_PATH=" not in run_arguments
                 assert any(value.startswith("DRAFTER_PATH=/models/hub/models--") for value in run_arguments)
+                assert "SGLANG_ENABLE_SPEC_V2=1" in run_arguments
+                assert "SGLANG_ENABLE_JIT_DEEPGEMM=0" in run_arguments
+
+
+def test_sglang_command_contract() -> None:
+    with tempfile.TemporaryDirectory() as temporary:
+        temp = pathlib.Path(temporary)
+        fake_bin = temp / "bin"
+        fake_bin.mkdir()
+        capture = temp / "command.bin"
+        executable(
+            fake_bin / "python3",
+            "#!/bin/bash\nprintf '%s\\0' \"$@\" >\"${COMMAND_CAPTURE:?}\"\n",
+        )
+        environment = {
+            "PATH": f"{fake_bin}:/usr/bin:/bin",
+            "COMMAND_CAPTURE": str(capture),
+            "NODE_RANK": "0",
+            "WORLD_SIZE": "2",
+            "MASTER_ADDR": "10.0.0.1",
+            "MASTER_PORT": "25001",
+            "MODEL_PATH": "/models/model",
+            "DRAFTER_PATH": "/models/drafter",
+            "SERVED": "qwen36-27b-unsloth-nvfp4-dflash-tp2",
+            "API_HOST": "100.64.0.8",
+            "API_PORT": "8888",
+            "MAX_MODEL_LEN": "262144",
+            "NCCL_SOCKET_IFNAME": "enp1s0f1np1",
+            "NCCL_IB_HCA": "rocep1s0f1",
+        }
+        completed = run(
+            [str(SERVE_NODE), "sglang", "unsloth_qwen36_27b_nvfp4_dflash_tp2"],
+            environment,
+        )
+        assert completed.returncode == 0, completed.stderr
+        arguments = [value.decode() for value in capture.read_bytes().split(b"\0") if value]
+        assert arguments[:2] == ["-m", "sglang.launch_server"]
+        assert arguments[arguments.index("--served-model-name") + 1] == environment["SERVED"]
+        assert arguments[arguments.index("--max-running-requests") + 1] == "8"
+        assert arguments[arguments.index("--speculative-num-draft-tokens") + 1] == "20"
+        assert arguments[arguments.index("--speculative-draft-window-size") + 1] == "4096"
+        assert "--disable-cuda-graph" in arguments
+        assert "--headless" not in arguments
+        assert "--cuda-graph-max-bs" not in arguments
 
 
 def main() -> int:
     test_cluster_front_door()
     test_transactional_failures()
     test_node_preflight_and_launch()
+    test_sglang_command_contract()
     print("cluster contracts: passed")
     return 0
 

@@ -235,6 +235,7 @@ start_node() {
 
   local -a environment=(
     -e "HOME=/root/.cache"
+    -e "CUDA_VISIBLE_DEVICES=0"
     -e "MODEL_PATH=$MODEL_PATH"
     -e "DRAFTER_PATH=$DRAFTER_PATH"
     -e "SERVED=$SERVED"
@@ -255,7 +256,7 @@ start_node() {
     -e "NCCL_CROSS_NIC=1"
     -e "NCCL_CUMEM_ENABLE=0"
     -e "NCCL_IGNORE_CPU_AFFINITY=1"
-    -e "NCCL_DEBUG=WARN"
+    -e "NCCL_DEBUG=INFO"
     -e "NCCL_NVLS_ENABLE=0"
     -e "PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True"
     -e "HF_HOME=/models/hub"
@@ -288,6 +289,11 @@ start_node() {
     for variable in "${profile_environment[@]}"; do
       [[ -v "$variable" ]] && environment+=( -e "$variable=${!variable}" )
     done
+  else
+    environment+=(
+      -e "SGLANG_ENABLE_SPEC_V2=1"
+      -e "SGLANG_ENABLE_JIT_DEEPGEMM=0"
+    )
   fi
 
   docker run -d \

@@ -39,15 +39,16 @@ case "$ENGINE/$ARTIFACT" in
       --context-length "$MAX_MODEL_LEN"
       --mem-fraction-static 0.85
       --enable-metrics
-      --max-running-requests 4
+      --max-running-requests 8
       --chunked-prefill-size 2048
       --tool-call-parser qwen3_coder
       --reasoning-parser qwen3
       --speculative-algorithm DFLASH
       --speculative-draft-model-path "$DRAFTER_PATH"
-      --speculative-num-draft-tokens 10
-      --speculative-draft-window-size 2048
+      --speculative-num-draft-tokens 20
+      --speculative-draft-window-size 4096
       --mamba-scheduler-strategy extra_buffer
+      --disable-cuda-graph
       "${headless[@]}"
     )
     ;;
