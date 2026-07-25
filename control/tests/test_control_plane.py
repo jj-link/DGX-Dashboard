@@ -48,6 +48,8 @@ def assert_hardened_ssh(arguments: list[bytes], host: str, remote_command: str |
         "-o", "RequestTTY=no",
         "-o", "ConnectTimeout=20",
         "-o", "ConnectionAttempts=3",
+        "-o", "ServerAliveInterval=60",
+        "-o", "ServerAliveCountMax=30",
         host,
     ]
     assert decoded[: len(expected_prefix)] == expected_prefix

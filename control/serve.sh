@@ -199,4 +199,4 @@ quoted=''
 for argument in "${command[@]}"; do
   printf -v quoted '%s %q' "$quoted" "$argument"
 done
-exec ssh -T -o BatchMode=yes -o StrictHostKeyChecking=yes -o ForwardAgent=no -o ClearAllForwardings=yes -o RequestTTY=no -o ConnectTimeout=20 -o ConnectionAttempts=3 "$host" "exec$quoted"
+exec ssh -T -o BatchMode=yes -o StrictHostKeyChecking=yes -o ForwardAgent=no -o ClearAllForwardings=yes -o RequestTTY=no -o ConnectTimeout=20 -o ConnectionAttempts=3 -o ServerAliveInterval=60 -o ServerAliveCountMax=30 "$host" "exec$quoted"
