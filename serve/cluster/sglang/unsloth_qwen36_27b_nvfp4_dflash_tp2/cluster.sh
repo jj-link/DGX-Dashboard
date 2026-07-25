@@ -146,7 +146,7 @@ payload = json.dumps({
     "messages": [{"role": "user", "content": "Reply with exactly STANDARDIZATION_OK and nothing else."}],
     "max_tokens": 16,
     "temperature": 0,
-    "chat_template_kwargs": {"thinking": False},
+    "chat_template_kwargs": {"enable_thinking": False},
 }).encode()
 request = urllib.request.Request(
     f"{base}/chat/completions",
@@ -158,7 +158,7 @@ with urllib.request.urlopen(request, timeout=180) as response:
 choice = chat["choices"][0]
 canonical = {
     "model": chat.get("model"),
-    "content": choice.get("message", {}).get("content", "").strip(),
+    "content": choice.get("message", {}).get("content"),
     "finish_reason": choice.get("finish_reason"),
 }
 if canonical["model"] != served:
