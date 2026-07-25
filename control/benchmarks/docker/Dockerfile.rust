@@ -1,0 +1,12 @@
+# polybench-rust: latest stable rustc (current exercism crate trees pull deps
+# that require a recent edition/rustc — pinned 1.79/1.86 fail to parse/build
+# them). We only `cargo fetch`: that downloads + caches the crate sources into
+# CARGO_HOME so per-exercise `cargo test` runs offline. Compilation happens at
+# test time with this image's up-to-date rustc, so no build-time rustc gate.
+FROM rust:slim
+ENV CARGO_HOME=/usr/local/cargo
+RUN mkdir -p /warm/src && cd /warm \
+ && printf '[package]\nname="warm"\nversion="0.1.0"\nedition="2021"\n[dependencies]\nrand="0.8"\ntime="0.3"\nanyhow="1.0"\n' > Cargo.toml \
+ && echo 'fn main(){}' > src/main.rs \
+ && cargo fetch \
+ && cd / && rm -rf /warm

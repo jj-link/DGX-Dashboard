@@ -1,0 +1,48 @@
+name: thinkingcap-qwen36-27b-nvfp4-dflash
+
+services:
+  thinkingcap-qwen36-27b-nvfp4-dflash:
+    image: vllm:thinkingcap-qwen36-27b-dflash
+    container_name: vllm-thinkingcap-qwen36-27b-nvfp4-dflash8
+    restart: "no"
+    ports:
+      - "${BIND_HOST:-100.86.3.45}:${HOST_PORT:-8000}:8000"
+    ipc: host
+    shm_size: 32g
+    tmpfs:
+      - /tmp:rw,nosuid,nodev,size=4g
+    environment:
+      HOME: /cache
+      HF_HOME: /models/hub
+      HF_HUB_OFFLINE: "1"
+      TRANSFORMERS_OFFLINE: "1"
+      CUDA_DEVICE_ORDER: PCI_BUS_ID
+      CUDA_VISIBLE_DEVICES: "0"
+      GPU_MEM_UTIL: "${GPU_MEM_UTIL:-0.75}"
+      MAXLEN: "${MAXLEN:-262144}"
+      MAX_NUM_BATCHED: "${MAX_NUM_BATCHED:-8688}"
+      MAX_NUM_SEQS: "${MAX_NUM_SEQS:-16}"
+      NUM_SPEC: "${NUM_SPEC:-8}"
+    volumes:
+      - /home/jjlink/models:/models:ro
+      - thinkingcap-dflash-compile-cache:/cache
+      - .:/workspace:ro
+    security_opt:
+      - no-new-privileges
+    cap_drop:
+      - ALL
+    pids_limit: 4096
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
+    working_dir: /workspace
+    entrypoint: /bin/bash
+    command: /workspace/scripts/serve.sh
+
+volumes:
+  thinkingcap-dflash-compile-cache:
+    name: vllm-compile-cache-thinkingcap-dflash-v024

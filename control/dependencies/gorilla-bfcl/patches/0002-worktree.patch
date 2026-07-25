@@ -1,0 +1,38 @@
+diff --git a/berkeley-function-call-leaderboard/bfcl_eval/constants/model_config.py b/berkeley-function-call-leaderboard/bfcl_eval/constants/model_config.py
+index e42fe1c..6d315f1 100644
+--- a/berkeley-function-call-leaderboard/bfcl_eval/constants/model_config.py
++++ b/berkeley-function-call-leaderboard/bfcl_eval/constants/model_config.py
+@@ -1741,6 +1741,18 @@ local_inference_model_map = {
+         is_fc_model=True,
+         underscore_to_dot=False,
+     ),
++    "spark/minimax-m2.7-reap-FC": ModelConfig(
++        model_name="minimax-m2.7-reap",
++        display_name="MiniMax-M2.7-REAP-172B-A10B-NVFP4 (FC)",
++        url="https://huggingface.co/saricles/MiniMax-M2.7-REAP-172B-A10B-NVFP4-GB10",
++        org="MiniMax",
++        license="apache-2.0",
++        model_handler=QuickTestingOSSHandler,
++        input_price=None,
++        output_price=None,
++        is_fc_model=True,
++        underscore_to_dot=False,
++    ),
+     "Qwen/Qwen3-32B": ModelConfig(
+         model_name="Qwen/Qwen3-32B",
+         display_name="Qwen3-32B (Prompt)",
+diff --git a/berkeley-function-call-leaderboard/bfcl_eval/model_handler/local_inference/base_oss_handler.py b/berkeley-function-call-leaderboard/bfcl_eval/model_handler/local_inference/base_oss_handler.py
+index 2697560..fa76883 100644
+--- a/berkeley-function-call-leaderboard/bfcl_eval/model_handler/local_inference/base_oss_handler.py
++++ b/berkeley-function-call-leaderboard/bfcl_eval/model_handler/local_inference/base_oss_handler.py
+@@ -119,6 +119,10 @@ class OSSHandler(BaseHandler, EnforceOverrides):
+ 
+         # For remote OpenAI-compatible endpoints, use specified tokenizer path if provided
+         is_remote_endpoint = bool(os.getenv("REMOTE_OPENAI_BASE_URL"))
++        # Allow caller to override the model id sent in API requests (e.g. served-model-name
++        # on vLLM differs from the HuggingFace registry name used in the BFCL config).
++        if is_remote_endpoint and os.getenv("REMOTE_OPENAI_MODEL_NAME"):
++            self.model_path_or_id = os.getenv("REMOTE_OPENAI_MODEL_NAME")
+         tokenizer_path = os.getenv("REMOTE_OPENAI_TOKENIZER_PATH", self.model_path_or_id)
+ 
+         if is_remote_endpoint and os.getenv("REMOTE_OPENAI_TOKENIZER_PATH"):

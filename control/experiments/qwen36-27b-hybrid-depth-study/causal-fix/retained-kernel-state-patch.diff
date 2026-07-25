@@ -1,0 +1,184 @@
+--- original/mamba_attn.py
++++ retained-patch/mamba_attn.py
+@@ -7,6 +7,7 @@
+ 
+ import torch
+ 
++import vllm.envs as envs
+ from vllm.config import VllmConfig
+ from vllm.utils.math_utils import cdiv
+ from vllm.utils.torch_utils import async_tensor_h2d
+@@ -75,6 +76,11 @@
+     batch_ptr: torch.Tensor | None = None
+     token_chunk_offset_ptr: torch.Tensor | None = None
+ 
++    # When set, the SSM kernel reads from src_ssm_indices_tensor_d and writes
++    # to state_indices_tensor_d. This overrides the default behavior of reading
++    # and writing in-place to state_indices_tensor_d.
++    src_ssm_indices_tensor_d: torch.Tensor | None = None
++
+ 
+ class BaseMambaAttentionMetadataBuilder(AttentionMetadataBuilder[M], abc.ABC):
+     metadata_cls: type[M]
+@@ -108,7 +114,14 @@
+                 self.compilation_config.max_cudagraph_capture_size,
+             )
+ 
+-        if self.vllm_config.cache_config.mamba_cache_mode == "all":
++        mamba_cache_mode = self.vllm_config.cache_config.mamba_cache_mode
++        self.is_mrv2_spec_decode_align_mode: bool = (
++            envs.VLLM_USE_V2_MODEL_RUNNER
++            and self.use_spec_decode
++            and mamba_cache_mode == "align"
++        )
++
++        if mamba_cache_mode == "all":
+             max_num_blocks = (
+                 cdiv(
+                     self.vllm_config.model_config.max_model_len,
+@@ -155,6 +168,16 @@
+         if self.num_spec_tokens > 0:
+             self.decode_num_accepted_tokens: torch.Tensor = torch.empty(
+                 (self.decode_cudagraph_max_bs,),
++                dtype=torch.int32,
++                device=device,
++            )
++
++        self.src_ssm_indices_tensor_d: torch.Tensor | None = None
++        if self.is_mrv2_spec_decode_align_mode:
++            # During MRV2 spec decode + align, this tensor overrides the
++            # indices read from while writing to the SSM staging blocks.
++            self.src_ssm_indices_tensor_d = torch.empty(
++                (self.decode_cudagraph_max_bs, 1 + self.num_spec_tokens),
+                 dtype=torch.int32,
+                 device=device,
+             )
+@@ -477,6 +500,36 @@
+             ]
+             state_indices_tensor_p = state_indices_tensor_p[:, 0]
+ 
++        src_ssm_indices_tensor_d = None
++        # Construct separate read tensor for the SSM kernel for
++        # MRV2 + spec decode + align mode.
++        if (
++            self.is_mrv2_spec_decode_align_mode
++            and num_decodes > 0
++            and num_decode_tokens > num_decodes
++            and num_accepted_tokens is not None
++        ):
++            if num_computed_tokens is None:
++                num_computed_tokens = common_attn_metadata.compute_num_computed_tokens()
++            # Get block containing last committed token.
++            committed_block_idx = torch.clamp(
++                (num_computed_tokens[:num_decodes] - 1)
++                // self.kv_cache_spec.block_size,
++                min=0,
++            ).to(torch.int64)
++            committed_phys = (
++                common_attn_metadata.block_table_tensor[:num_decodes]
++                .gather(1, committed_block_idx.unsqueeze(1))
++                .squeeze(1)
++            )
++            # Every column for the SSM read is the committed block
++            # physical ID.
++            src_ssm_indices_tensor_d = (
++                committed_phys.unsqueeze(1)
++                .expand_as(state_indices_tensor_d)
++                .contiguous()
++            )
++
+         # Sometimes even with specdec enabled we get single-token prefill chunks that
+         # should be treated as decodes but don't have num_accepted_tokens set.
+         # These should be fine to process as non-spec decodes since there's only
+@@ -527,6 +580,7 @@
+             has_initial_states_p=has_initial_states_p,
+             state_indices_tensor_p=state_indices_tensor_p,
+             state_indices_tensor_d=state_indices_tensor_d,
++            src_ssm_indices_tensor_d=src_ssm_indices_tensor_d,
+             num_accepted_tokens=num_accepted_tokens,
+             query_start_loc_d=query_start_loc_d,
+             block_idx_last_scheduled_token=block_idx_last_scheduled_token,
+@@ -561,6 +615,7 @@
+         block_idx_last_scheduled_token_prev_step = (
+             metadata.block_idx_last_scheduled_token_prev_step
+         )
++        src_ssm_indices_tensor_d = metadata.src_ssm_indices_tensor_d
+         if (
+             metadata.num_prefills == 0
+             and metadata.num_decodes <= self.decode_cudagraph_max_bs
+@@ -622,6 +677,14 @@
+                     )
+                     block_idx_last_scheduled_token_prev_step[metadata.num_decodes :] = 0
+ 
++            if src_ssm_indices_tensor_d is not None:
++                assert self.src_ssm_indices_tensor_d is not None
++                self.src_ssm_indices_tensor_d[: metadata.num_decodes].copy_(
++                    src_ssm_indices_tensor_d, non_blocking=True
++                )
++                src_ssm_indices_tensor_d = self.src_ssm_indices_tensor_d[:padded_bs]
++                src_ssm_indices_tensor_d[metadata.num_decodes :] = NULL_BLOCK_ID
++
+         return replace(
+             metadata,
+             state_indices_tensor_d=state_indices_tensor_d,
+@@ -632,6 +695,7 @@
+             block_idx_last_scheduled_token_prev_step=(
+                 block_idx_last_scheduled_token_prev_step
+             ),
++            src_ssm_indices_tensor_d=src_ssm_indices_tensor_d,
+         )
+ 
+     def update_block_table(
+--- original/mamba_mixer2.py
++++ retained-patch/mamba_mixer2.py
+@@ -233,10 +233,10 @@
+ @PluggableLayer.register("mamba_mixer2")
+ class MambaMixer2(MambaBase, PluggableLayer):
+     """
+-    Compute âˆ†, A, B, C, and D the state space parameters and compute
++    Compute ∆, A, B, C, and D the state space parameters and compute
+     the `contextualized_states`. A, D are input independent
+     (see Mamba paper [1] Section 3.5.2 "Interpretation of A"
+-    for why A isn't selective) âˆ†, B, C are input-dependent
++    for why A isn't selective) ∆, B, C are input-dependent
+     (this is a key difference between Mamba and the linear time
+     invariant S4, and is why Mamba is called
+     **selective** state spaces)
+@@ -983,8 +983,15 @@
+                         1, block_idx_last_scheduled_token_d.unsqueeze(1)
+                     ).squeeze(1)
+             else:
+-                # Without caching, read and write in-place to the same blocks:
+-                state_indices_tensor_d_input = state_indices_tensor_d
++                if attn_metadata.src_ssm_indices_tensor_d is None:
++                    # Read and write in-place to the same blocks.
++                    state_indices_tensor_d_input = state_indices_tensor_d
++                else:
++                    # Read from separate set of blocks. Used for MRV2's "align"
++                    # mamba cache mode.
++                    state_indices_tensor_d_input = (
++                        attn_metadata.src_ssm_indices_tensor_d
++                    )
+                 state_indices_tensor_d_output = state_indices_tensor_d
+ 
+             # 2. Convolution sequence transformation
+--- original/_custom_ops.py
++++ retained-patch/_custom_ops.py
+@@ -2579,7 +2579,7 @@
+ 
+     - dense layer (``num_index_heads == 0``): ``[q | k | v]``;
+     - sparse layer (``num_index_heads > 0``): ``[q | k | v | index_q |
+-      index_k]`` â€” the index branch is read straight out of ``qkv``.
++      index_k]`` — the index branch is read straight out of ``qkv``.
+ 
+     When ``kv_cache`` is given (sparse serving), also scatter-inserts the
+     normed/roped k & v into the paged KV cache by ``slot_mapping`` and the
+@@ -2589,7 +2589,7 @@
+ 
+     If ``q_out`` / ``index_q_out`` (contiguous ``[N, nq*128]`` / ``[N,
+     niq*128]``) are given, the normed/roped q / index_q are written there
+-    instead of in place â€” folding the de-interleave into this kernel's store so
++    instead of in place — folding the de-interleave into this kernel's store so
+     callers skip a separate ``.contiguous()`` copy before the SM100 sparse
+     attention's flat TMA descriptor.
+     """

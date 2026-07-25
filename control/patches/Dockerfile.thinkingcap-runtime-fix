@@ -1,0 +1,8 @@
+FROM vllm:v0.24.0-dflash-hybrid-20260716-local
+COPY vllm-0.24-dflash-depth-matrix/vllm /usr/local/lib/python3.12/dist-packages/vllm
+COPY vllm-0.24-align-upstream/vllm/v1/worker/mamba_utils.py /usr/local/lib/python3.12/dist-packages/vllm/v1/worker/mamba_utils.py
+COPY vllm-0.24-align-upstream/vllm/v1/worker/gpu/model_states/mamba_hybrid.py /usr/local/lib/python3.12/dist-packages/vllm/v1/worker/gpu/model_states/mamba_hybrid.py
+COPY vllm-0.24-align-upstream/vllm/model_executor/layers/mamba/gdn/qwen_gdn_linear_attn.py /usr/local/lib/python3.12/dist-packages/vllm/model_executor/layers/mamba/gdn/qwen_gdn_linear_attn.py
+COPY vllm-0.24-align-upstream/vllm/config/compilation.py /usr/local/lib/python3.12/dist-packages/vllm/config/compilation.py
+COPY vllm-0.24-align-upstream/vllm/model_executor/models/qwen3_next.py /usr/local/lib/python3.12/dist-packages/vllm/model_executor/models/qwen3_next.py
+COPY vllm-0.24-align-upstream/vllm/model_executor/models/qwen3_5.py /usr/local/lib/python3.12/dist-packages/vllm/model_executor/models/qwen3_5.py

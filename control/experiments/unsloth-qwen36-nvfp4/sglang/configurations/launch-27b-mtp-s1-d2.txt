@@ -1,0 +1,1 @@
+DETACH=1 PORT=8000 CONFIG=mtp SPEC_STEPS=1 NUM_SPEC=2 LINEAR_ATTN_PREFILL_BACKEND=triton LINEAR_ATTN_DECODE_BACKEND=flashinfer MAMBA_SSM_DTYPE=bfloat16 CONTAINER_NAME=unsloth-qwen36-sglang-27b-mtp-s1-d2 /home/workbench/inference/experiments/unsloth-qwen36-nvfp4/sglang/serve-27b.sh

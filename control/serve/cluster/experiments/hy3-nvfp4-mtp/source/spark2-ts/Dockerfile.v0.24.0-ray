@@ -1,0 +1,2 @@
+FROM vllm/vllm-openai:latest
+RUN python3 -m pip install --no-cache-dir "ray[default]==2.56.0"

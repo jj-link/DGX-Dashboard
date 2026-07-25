@@ -1,0 +1,53 @@
+services:
+  nex-n2-mini-nvfp4:
+    image: lmsysorg/sglang:v0.5.12-cu130
+    container_name: sglang-nex-n2-mini-nvfp4
+    restart: "no"
+    ports:
+      - "8000:30000"
+    ipc: host
+    shm_size: 32g
+    volumes:
+      - ${HOME}/models:/models
+    environment:
+      HF_TOKEN: ${HF_TOKEN}
+      HF_HOME: /models
+      SGLANG_ENABLE_JIT_DEEPGEMM: "0"
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
+    command:
+      - python3
+      - -m
+      - sglang.launch_server
+      - --model-path
+      - r0b0tlab/nex-n2-mini-nvfp4
+      - --host
+      - 0.0.0.0
+      - --port
+      - "30000"
+      - --served-model-name
+      - Nex-N2-mini-NVFP4
+      - --trust-remote-code
+      - --tp-size
+      - "1"
+      - --attention-backend
+      - flashinfer
+      - --context-length
+      - "262144"
+      - --tool-call-parser
+      - qwen3_coder
+      - --reasoning-parser
+      - qwen3
+      - --mem-fraction-static
+      - "0.85"
+      - --max-running-requests
+      - "8"
+      - --chunked-prefill-size
+      - "2048"
+      - --enable-metrics
+      - --disable-cuda-graph

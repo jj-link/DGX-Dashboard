@@ -1,0 +1,209 @@
+--- original/mamba_hybrid.py
++++ trace/mamba_hybrid.py
+@@ -9,16 +9,20 @@
+ 
+ from vllm.config import VllmConfig
+ from vllm.config.compilation import CUDAGraphMode
++from vllm.logger import init_logger
+ from vllm.triton_utils import tl, triton
+ from vllm.v1.attention.backends.gdn_attn import GDNAttentionMetadataBuilder
+ from vllm.v1.attention.backends.mamba2_attn import Mamba2AttentionMetadataBuilder
+-from vllm.v1.kv_cache_interface import KVCacheConfig
++from vllm.v1.attention.backends.utils import mamba_get_block_table_tensor
++from vllm.v1.kv_cache_interface import KVCacheConfig, MambaSpec
+ from vllm.v1.worker.gpu.attn_utils import build_attn_metadata
+ from vllm.v1.worker.gpu.input_batch import InputBatch
+ from vllm.v1.worker.gpu.mm.encoder_cache import EncoderCache
+ from vllm.v1.worker.gpu.model_states.default import DefaultModelState
+ from vllm.v1.worker.gpu.model_states.interface import ModelSpecificAttnMetadata
+ from vllm.v1.worker.utils import AttentionGroup
++
++logger = init_logger(__name__)
+ 
+ 
+ @dataclass
+@@ -68,6 +72,16 @@
+         self.num_accepted_tokens_gpu = torch.ones(
+             self.max_num_reqs, dtype=torch.int32, device=self.device
+         )
++        self.is_spec_decode_align_mode = (
++            vllm_config.num_speculative_tokens > 0
++            and vllm_config.cache_config.mamba_cache_mode == "align"
++        )
++        self.last_block_tables: tuple[torch.Tensor, ...] | None = None
++        self.last_kv_cache_config: KVCacheConfig | None = None
++        self.last_seq_lens: torch.Tensor | None = None
++        self.last_query_start_loc: torch.Tensor | None = None
++        self.last_num_reqs = 0
++        self.last_num_draft_tokens = 0
+ 
+     def prepare_attn(
+         self,
+@@ -120,6 +134,17 @@
+                 )
+             num_decode_draft_tokens_cpu = torch.from_numpy(num_decode_draft_tokens_np)
+ 
++            if self.is_spec_decode_align_mode:
++                # postprocess_state runs immediately after this target step. These
++                # tensors remain valid until then and avoid changing the model-runner
++                # interface or copying per-request counters through the host.
++                self.last_block_tables = block_tables
++                self.last_kv_cache_config = kv_cache_config
++                self.last_seq_lens = input_batch.seq_lens
++                self.last_query_start_loc = input_batch.query_start_loc
++                self.last_num_reqs = input_batch.num_reqs
++                self.last_num_draft_tokens = input_batch.num_draft_tokens
++
+         mamba_attn_metadata = MambaHybridAttnMetadata(
+             is_prefilling=is_prefilling,
+             num_accepted_tokens=num_accepted_tokens,
+@@ -155,10 +180,149 @@
+                 _scatter_num_accepted_kernel[(num_reqs,)](
+                     idx_mapping, num_sampled, self.num_accepted_tokens_gpu
+                 )
++                self._copy_staging_to_committed(idx_mapping, num_sampled)
+             return
+ 
+         # Fill with single value.
+         self.num_accepted_tokens_gpu.index_fill_(0, idx_mapping, max(num_sampled, 1))
++
++    def _copy_staging_to_committed(
++        self, idx_mapping: torch.Tensor, num_sampled: torch.Tensor
++    ) -> None:
++        """Commit the last accepted recurrent state and preserve crossed blocks."""
++        if not self.is_spec_decode_align_mode or self.last_num_draft_tokens == 0:
++            return
++        assert self.last_block_tables is not None
++        assert self.last_kv_cache_config is not None
++        assert self.last_seq_lens is not None
++        assert self.last_query_start_loc is not None
++
++        num_reqs = min(self.last_num_reqs, idx_mapping.shape[0], num_sampled.shape[0])
++        if num_reqs == 0:
++            return
++        valid_mask = idx_mapping[:num_reqs] >= 0
++        accepted = torch.clamp(num_sampled[:num_reqs], min=1)
++        needs_copy_mask = valid_mask & (accepted > 1)
++        if not needs_copy_mask.any():
++            return
++
++        seq_lens = self.last_seq_lens[:num_reqs]
++        query_start_loc = self.last_query_start_loc[: num_reqs + 1]
++        query_lens = query_start_loc[1:] - query_start_loc[:-1]
++        num_computed_before = seq_lens - query_lens
++        num_computed_after = num_computed_before + accepted
++
++        fwd_ctx = self.vllm_config.compilation_config.static_forward_context
++        cache_mode = self.vllm_config.cache_config.mamba_cache_mode
++        num_spec_tokens = self.vllm_config.num_speculative_tokens
++        selected_commit = needs_copy_mask.nonzero(as_tuple=False).squeeze(1)
++        logger.info(
++            "MAMBA_STATE_COMMIT depth=%d idx=%s before=%s after=%s accepted=%s",
++            num_spec_tokens,
++            idx_mapping[:num_reqs][selected_commit].tolist(),
++            num_computed_before[selected_commit].tolist(),
++            num_computed_after[selected_commit].tolist(),
++            accepted[selected_commit].tolist(),
++        )
++
++        for group_index, group in enumerate(
++            self.last_kv_cache_config.kv_cache_groups
++        ):
++            if not isinstance(group.kv_cache_spec, MambaSpec):
++                continue
++
++            block_table = self.last_block_tables[group_index]
++            block_size = group.kv_cache_spec.block_size
++            state_indices = mamba_get_block_table_tensor(
++                block_table,
++                seq_lens,
++                group.kv_cache_spec,
++                cache_mode,
++            )[:num_reqs, : 1 + num_spec_tokens]
++
++            accepted_source_column = (
++                (accepted - 1)
++                .clamp(max=state_indices.size(1) - 1)
++                .to(torch.int64)
++            )
++            accepted_source_phys = state_indices.gather(
++                1, accepted_source_column.unsqueeze(1)
++            ).squeeze(1)
++
++            ssm_destination_column = torch.clamp(
++                (num_computed_after - 1) // block_size, min=0
++            ).to(torch.int64)
++            ssm_destination_phys = block_table[:num_reqs].gather(
++                1, ssm_destination_column.unsqueeze(1)
++            ).squeeze(1)
++
++            conv_destination_column = torch.clamp(
++                (num_computed_after + num_spec_tokens) // block_size, min=0
++            ).to(torch.int64)
++            conv_destination_phys = block_table[:num_reqs].gather(
++                1, conv_destination_column.unsqueeze(1)
++            ).squeeze(1)
++
++            previous_block_column = torch.clamp(
++                (num_computed_before - 1) // block_size, min=0
++            ).to(torch.int64)
++            crossed_boundary_mask = ssm_destination_column > previous_block_column
++            boundary_copy_mask = needs_copy_mask & crossed_boundary_mask
++            boundary_source_phys: torch.Tensor | None = None
++            boundary_destination_phys: torch.Tensor | None = None
++            if boundary_copy_mask.any():
++                boundary_position = (previous_block_column + 1) * block_size - 1
++                boundary_source_column = (
++                    (boundary_position - num_computed_before)
++                    .clamp(min=0, max=num_spec_tokens)
++                    .to(torch.int64)
++                )
++                boundary_source_phys = state_indices.gather(
++                    1, boundary_source_column.unsqueeze(1)
++                ).squeeze(1)
++                boundary_destination_phys = block_table[:num_reqs].gather(
++                    1, previous_block_column.unsqueeze(1)
++                ).squeeze(1)
++
++                selected = boundary_copy_mask.nonzero(as_tuple=False).squeeze(1)
++                logger.info(
++                    "MAMBA_STATE_BOUNDARY_COMMIT depth=%d block_size=%d "
++                    "before=%s after=%s accepted=%s accepted_src=%s "
++                    "ssm_dst=%s conv_dst=%s boundary_src=%s boundary_dst=%s",
++                    num_spec_tokens,
++                    block_size,
++                    num_computed_before[selected].tolist(),
++                    num_computed_after[selected].tolist(),
++                    accepted[selected].tolist(),
++                    accepted_source_phys[selected].tolist(),
++                    ssm_destination_phys[selected].tolist(),
++                    conv_destination_phys[selected].tolist(),
++                    boundary_source_phys[selected].tolist(),
++                    boundary_destination_phys[selected].tolist(),
++                )
++
++            for layer_name in group.layer_names:
++                layer = fwd_ctx[layer_name]
++                conv_state = layer.kv_cache[0]
++                ssm_state = layer.kv_cache[1]
++
++                # Preserve the state for a completed block before writing the
++                # final accepted state. The boundary source can alias either
++                # running destination at a block crossing.
++                if boundary_source_phys is not None:
++                    assert boundary_destination_phys is not None
++                    boundary_source = boundary_source_phys[boundary_copy_mask].long()
++                    boundary_destination = boundary_destination_phys[
++                        boundary_copy_mask
++                    ].long()
++                    ssm_state[boundary_destination] = ssm_state[boundary_source]
++                    conv_state[boundary_destination] = conv_state[boundary_source]
++
++                accepted_source = accepted_source_phys[needs_copy_mask].long()
++                conv_destination = conv_destination_phys[needs_copy_mask].long()
++                conv_state[conv_destination] = conv_state[accepted_source]
++                ssm_destination = ssm_destination_phys[needs_copy_mask].long()
++                ssm_state[ssm_destination] = ssm_state[accepted_source]
+ 
+ 
+ @triton.jit

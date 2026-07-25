@@ -1,0 +1,29 @@
+services:
+  gemma4-26b-nvfp4:
+    image: vllm/vllm-openai:gemma
+    container_name: vllm-gemma4-26b-nvfp4
+    restart: "no"
+    ports:
+      - "8001:8000"
+    ipc: host
+    shm_size: 32g
+    volumes:
+      - ${HOME}/models:/models
+    environment:
+      HF_HOME: /models
+      VLLM_USE_V2_MODEL_RUNNER: "1"
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
+    command: >
+      nvidia/Gemma-4-26B-A4B-NVFP4
+      --host 0.0.0.0
+      --port 8000
+      --trust-remote-code
+      --max-num-seqs 8
+      --max-cudagraph-capture-size 8
+      --attention-backend TRITON_ATTN

@@ -1,0 +1,2 @@
+FROM vllm:qwen27-original-unpatched-uva
+COPY mamba_hybrid.py /usr/local/lib/python3.12/dist-packages/vllm/v1/worker/gpu/model_states/mamba_hybrid.py

@@ -1,0 +1,33 @@
+# Rank 1 (spark3) — DeepSeek-V4-Flash-DSpark TP=2
+# Launch from spark2: ssh jjlink@10.0.0.2 'docker compose -f ~/inference/vllm/DeepSeek-V4-Flash-DSpark/rank1-docker-compose.yml up -d'
+services:
+  deepseek-v4-flash-rank1:
+    image: vllm/vllm-openai:gemma
+    container_name: vllm-deepseek-v4-flash-rank1
+    restart: "no"
+    network_mode: host
+    volumes:
+      - ${HOME}/models:/models
+    environment:
+      HF_HOME: /models
+      VLLM_USE_V2_MODEL_RUNNER: "1"
+      NCCL_SOCKET_IFNAME: enp1s0f1np1
+      NCCL_IB_DISABLE: "1"
+      NCCL_DEBUG: info
+      MASTER_ADDR: "10.0.0.1"
+      MASTER_PORT: "55555"
+      RANK: "1"
+      WORLD_SIZE: "2"
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]
+    command: >
+      vllm serve
+      --model       --model /models/hub/models--deepseek-ai--DeepSeek-V4-Flash-DSpark
+      --tensor-parallel-size 2
+      --distributed-executor-backend mp
+      --trust-remote-code

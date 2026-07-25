@@ -1,0 +1,10 @@
+- name: openai/gemma-4-12b-it-UD-Q4_K_XL.gguf
+  edit_format: whole
+  use_repo_map: false
+  send_undo_reply: false
+  examples_as_sys_msg: true
+  streaming: true
+  use_temperature: true
+  extra_params:
+    max_tokens: 49152
+    temperature: 0.0

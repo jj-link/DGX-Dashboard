@@ -1,0 +1,319 @@
+diff --git a/python/sglang/srt/layers/quantization/compressed_tensors/compressed_tensors.py b/python/sglang/srt/layers/quantization/compressed_tensors/compressed_tensors.py
+index 0495e95..a1a8561 100644
+--- a/python/sglang/srt/layers/quantization/compressed_tensors/compressed_tensors.py
++++ b/python/sglang/srt/layers/quantization/compressed_tensors/compressed_tensors.py
+@@ -14,6 +14,7 @@ from typing import (
+     NamedTuple,
+     Optional,
+     Tuple,
++    TypedDict,
+     cast,
+ )
+ 
+@@ -84,7 +85,15 @@ logger = logging.getLogger(__name__)
+ __all__ = ["CompressedTensorsLinearMethod"]
+ 
+ SPARSITY_CONFIG_NAME: Literal["sparsity_config"] = "sparsity_config"
+-QUANTIZATION_SCHEME_MAP_TYPE = Dict[str, Optional[Dict[str, QuantizationArgs]]]
++
++
++class QuantizationSchemeEntry(TypedDict):
++    format: str
++    weights: QuantizationArgs
++    input_activations: Optional[QuantizationArgs]
++
++
++QUANTIZATION_SCHEME_MAP_TYPE = Dict[str, QuantizationSchemeEntry]
+ 
+ 
+ class DeviceCapability(NamedTuple):
+@@ -163,8 +172,9 @@ class CompressedTensorsConfig(QuantizationConfig):
+         prefix: str,
+     ) -> Optional[QuantizeMethodBase]:
+         from sglang.srt.layers.linear import LinearBase
++        from sglang.srt.layers.vocab_parallel_embedding import ParallelLMHead
+ 
+-        if isinstance(layer, LinearBase):
++        if isinstance(layer, (LinearBase, ParallelLMHead)):
+             # If linear_fp8_config is set, use FP8 for linear layers
+             # This allows mixed quantization: experts with int4, linear layers with fp8
+             if self.linear_fp8_config is not None:
+@@ -282,8 +292,8 @@ class CompressedTensorsConfig(QuantizationConfig):
+         :return: A dictionary mapping target layer names to their corresponding
+             quantization_args for weights and input activations
+         """
+-        target_scheme_map: Dict[str, Any] = dict()
+-        quant_format = cast(str, config.get("format"))
++        target_scheme_map: QUANTIZATION_SCHEME_MAP_TYPE = dict()
++        quant_format = cast(str, config.get("format", ""))
+ 
+         # The quant_config has multiple config_groups, each containing
+         # an input_activations key with details about how the activations are
+@@ -296,15 +306,18 @@ class CompressedTensorsConfig(QuantizationConfig):
+ 
+         config_groups = config.get("config_groups", dict())
+         for _, quant_config in config_groups.items():
++            group_format = cast(str, quant_config.get("format") or quant_format)
+             targets = quant_config.get("targets")
+             for target in targets:
+-                target_scheme_map[target] = {}
++                target_scheme_map[target] = {
++                    "format": group_format,
++                }
+                 target_scheme_map[target]["weights"] = QuantizationArgs.model_validate(
+                     quant_config.get("weights")
+                 )
+ 
+                 target_scheme_map[target]["input_activations"] = None
+-                if is_activation_quantization_format(quant_format):
++                if is_activation_quantization_format(group_format):
+                     input_activations = quant_config.get("input_activations")
+                     # The only case where we have activation quant supported
+                     # but no input_activations provided in the config
+@@ -543,13 +556,16 @@ class CompressedTensorsConfig(QuantizationConfig):
+         return is_w4 and weight_quant.symmetric and is_token and is_dynamic
+ 
+     def _get_scheme_from_parts(
+-        self, weight_quant: BaseModel, input_quant: BaseModel
++        self,
++        weight_quant: BaseModel,
++        input_quant: BaseModel,
++        quant_format: str,
+     ) -> CompressedTensorsLinearScheme:
+ 
+         # Detect If Mixed Precision
+         if self._is_wNa16_group_channel(weight_quant, input_quant):
+             if (
+-                self.quant_format == CompressionFormat.pack_quantized.value
++                quant_format == CompressionFormat.pack_quantized.value
+                 and weight_quant.num_bits in WNA16_SUPPORTED_BITS
+             ):
+                 return CompressedTensorsWNA16(
+@@ -564,7 +580,7 @@ class CompressedTensorsConfig(QuantizationConfig):
+                     "Other method (CompressedTensorsW4A16Sparse24) is not supported now"
+                 )
+ 
+-        if is_activation_quantization_format(self.quant_format):
++        if is_activation_quantization_format(quant_format):
+             if self._is_fp4a4_nvfp4(weight_quant, input_quant):
+                 is_fp4a4_nvfp4_supported = self._check_scheme_supported(
+                     CompressedTensorsW4A4Fp4.get_min_capability(), error=False
+@@ -760,9 +776,11 @@ class CompressedTensorsConfig(QuantizationConfig):
+         scheme_dict = self.get_scheme_dict(layer, layer_name)
+         weight_quant = None
+         input_quant = None
++        quant_format = self.quant_format
+         if scheme_dict:
+             weight_quant = scheme_dict.get("weights")
+             input_quant = scheme_dict.get("input_activations")
++            quant_format = cast(str, scheme_dict.get("format", self.quant_format))
+ 
+         # Find the sparsity scheme of the layer
+         # assume that fused layers inerhit first component's sparsity scheme
+@@ -798,6 +816,7 @@ class CompressedTensorsConfig(QuantizationConfig):
+             scheme = self._get_scheme_from_parts(  # type: ignore
+                 weight_quant=weight_quant,
+                 input_quant=input_quant,
++                quant_format=quant_format,
+             )
+ 
+         # Raise error if device does not support the scheme
+diff --git a/python/sglang/srt/layers/quantization/compressed_tensors/utils.py b/python/sglang/srt/layers/quantization/compressed_tensors/utils.py
+index e7d6db6..70910bb 100644
+--- a/python/sglang/srt/layers/quantization/compressed_tensors/utils.py
++++ b/python/sglang/srt/layers/quantization/compressed_tensors/utils.py
+@@ -159,8 +159,9 @@ def _is_equal_or_regex_match(
+ ) -> bool:
+     """
+     Checks whether a value is exactly equal or a regex match for target
+-    if target starts with 're:'. If check_contains is set to True,
+-    additionally checks if the target string is contained within the value.
++    if target starts with 're:'. With check_contains, undotted module names
++    can match within the value, while fully qualified names only match the
++    same module and do not implicitly ignore all of its children.
+     """
+ 
+     if target.startswith("re:"):
+@@ -168,7 +169,14 @@ def _is_equal_or_regex_match(
+         if re.match(pattern, value):
+             return True
+     elif check_contains:
+-        if target.lower() in value.lower():
++        value_lower = value.lower()
++        target_lower = target.lower()
++        if "." in target:
++            if value_lower == target_lower or value_lower.endswith(
++                f".{target_lower}"
++            ):
++                return True
++        elif target_lower in value_lower:
+             return True
+     elif target == value:
+         return True
+diff --git a/python/sglang/srt/speculative/dflash_worker_v2.py b/python/sglang/srt/speculative/dflash_worker_v2.py
+index 68c5ae5..3ead86e 100644
+--- a/python/sglang/srt/speculative/dflash_worker_v2.py
++++ b/python/sglang/srt/speculative/dflash_worker_v2.py
+@@ -10,6 +10,7 @@ from sglang.kernels.ops.speculative.dflash import (
+     _prepare_dflash_draft_block_unchecked,
+ )
+ from sglang.srt.distributed import get_tp_group
++from sglang.srt.layers.logits_processor import should_apply_lm_head_quant_method
+ from sglang.srt.managers.schedule_batch import ScheduleBatch
+ from sglang.srt.managers.scheduler import GenerationBatchResult
+ from sglang.srt.managers.tp_worker import TpModelWorker
+@@ -55,6 +56,17 @@ def _get_fused_kv_materialize_helper():
+     return _FusedKVMaterializeHelper
+ 
+ 
++def _apply_dflash_lm_head(lm_head, hidden_states):
++    quant_method = getattr(lm_head, "quant_method", None)
++    if should_apply_lm_head_quant_method(lm_head, quant_method):
++        return quant_method.apply(lm_head, hidden_states, None)
++
++    weight = lm_head.weight
++    if hidden_states.dtype != weight.dtype:
++        hidden_states = hidden_states.to(weight.dtype)
++    return torch.matmul(hidden_states, weight.T)
++
++
+ class _DflashDraftSampler:
+     """Capture-safe greedy argmax over the target LM head, run inside the draft
+     cuda graph so the draft sampling is captured and counted in fwd_occupancy.
+@@ -62,8 +74,8 @@ class _DflashDraftSampler:
+     tp=1 / no-added-vocab only; TP>1 stays eager in the worker.
+     """
+ 
+-    def __init__(self, *, weight, block_size, num_org, org_vocab_start, max_bs):
+-        self.weight = weight
++    def __init__(self, *, lm_head, block_size, num_org, org_vocab_start, max_bs):
++        self.lm_head = lm_head
+         self.block_size = int(block_size)
+         self.num_org = int(num_org)
+         self.org_vocab_start = int(org_vocab_start)
+@@ -71,7 +83,7 @@ class _DflashDraftSampler:
+         self.out = torch.empty(
+             (int(max_bs) * (self.block_size - 1),),
+             dtype=torch.int64,
+-            device=weight.device,
++            device=lm_head.weight.device,
+         )
+ 
+     def __call__(self, hidden_states):
+@@ -80,9 +92,8 @@ class _DflashDraftSampler:
+         hs = hidden_states.view(bs, self.block_size, -1)[:, 1:, :].reshape(
+             -1, hidden_states.shape[-1]
+         )
+-        if hs.dtype != self.weight.dtype:
+-            hs = hs.to(self.weight.dtype)
+-        logits = torch.matmul(hs, self.weight[: self.num_org].T)
++        logits = _apply_dflash_lm_head(self.lm_head, hs)
++        logits = logits[:, : self.num_org]
+         tokens = torch.argmax(logits, dim=-1).to(torch.long)
+         if self.org_vocab_start:
+             tokens += self.org_vocab_start
+@@ -324,11 +335,17 @@ class DFlashWorkerV2(BaseSpecWorker):
+         lm_head = getattr(target_model, "lm_head", None)
+         if lm_head is None or not hasattr(lm_head, "weight"):
+             return _eager("no target lm_head")
+-        if not torch.is_floating_point(lm_head.weight):
+-            # Quantized lm_head (FP8/INT) would break the static matmul.
+-            return _eager("quantized lm_head")
++        quant_method = getattr(lm_head, "quant_method", None)
++        use_quant_method = should_apply_lm_head_quant_method(lm_head, quant_method)
++        if not torch.is_floating_point(lm_head.weight) and not use_quant_method:
++            return _eager("unsupported quantized lm_head")
+         if not hasattr(lm_head, "shard_indices"):
+-            num_org = int(lm_head.weight.shape[0])
++            default_num_org = (
++                lm_head.weight.shape[-1]
++                if use_quant_method
++                else lm_head.weight.shape[0]
++            )
++            num_org = int(getattr(lm_head, "num_embeddings", default_num_org))
+             org_vocab_start = 0
+         else:
+             shard = lm_head.shard_indices
+@@ -339,7 +356,7 @@ class DFlashWorkerV2(BaseSpecWorker):
+         if self.tp_rank == 0:
+             logger.info("DFLASH draft greedy head folded into the draft cuda graph.")
+         return _DflashDraftSampler(
+-            weight=lm_head.weight,
++            lm_head=lm_head,
+             block_size=self.block_size,
+             num_org=num_org,
+             org_vocab_start=org_vocab_start,
+@@ -672,21 +689,15 @@ class DFlashWorkerV2(BaseSpecWorker):
+         if hidden_states.numel() == 0:
+             return torch.empty((0,), dtype=torch.long, device=hidden_states.device)
+ 
+-        weight = lm_head.weight  # [local_vocab_padded, hidden]
+-        weight_dtype = weight.dtype
+         num_tokens = int(hidden_states.shape[0])
+         out_tokens = torch.empty(
+             (num_tokens,), dtype=torch.long, device=hidden_states.device
+         )
+ 
+-        def _cast_hs(x: torch.Tensor) -> torch.Tensor:
+-            return x if x.dtype == weight_dtype else x.to(weight_dtype)
+-
+         if not hasattr(lm_head, "shard_indices"):
+             for start in range(0, num_tokens, int(chunk_size)):
+                 end = min(num_tokens, start + int(chunk_size))
+-                hs = _cast_hs(hidden_states[start:end])
+-                logits = torch.matmul(hs, weight.T)
++                logits = _apply_dflash_lm_head(lm_head, hidden_states[start:end])
+                 out_tokens[start:end] = torch.argmax(logits, dim=-1).to(torch.long)
+             return out_tokens
+ 
+@@ -739,9 +750,10 @@ class DFlashWorkerV2(BaseSpecWorker):
+             fast_chunk_size = max(int(chunk_size), 1024)
+             for start in range(0, num_tokens, fast_chunk_size):
+                 end = min(num_tokens, start + fast_chunk_size)
+-                hs = _cast_hs(hidden_states[start:end])
++                hs = hidden_states[start:end]
+                 if num_org > 0:
+-                    base_logits = torch.matmul(hs, weight[:num_org].T)
++                    logits = _apply_dflash_lm_head(lm_head, hs)
++                    base_logits = logits[:, :num_org]
+                     local_max, local_arg = _ensure_local_reduce_buffers(
+                         end - start, base_logits.dtype, hs.device
+                     )
+@@ -754,12 +766,13 @@ class DFlashWorkerV2(BaseSpecWorker):
+ 
+         for start in range(0, num_tokens, int(chunk_size)):
+             end = min(num_tokens, start + int(chunk_size))
+-            hs = _cast_hs(hidden_states[start:end])
++            hs = hidden_states[start:end]
+             chunk_len = int(hs.shape[0])
++            logits = _apply_dflash_lm_head(lm_head, hs)
+ 
+             # Base vocab logits.
+             if num_org > 0:
+-                base_logits = torch.matmul(hs, weight[:num_org].T)
++                base_logits = logits[:, :num_org]
+                 local_max, local_arg = _ensure_local_reduce_buffers(
+                     chunk_len, base_logits.dtype, hs.device
+                 )
+@@ -767,8 +780,8 @@ class DFlashWorkerV2(BaseSpecWorker):
+             else:
+                 local_max = torch.full(
+                     (chunk_len,),
+-                    torch.finfo(weight_dtype).min,
+-                    dtype=weight_dtype,
++                    torch.finfo(logits.dtype).min,
++                    dtype=logits.dtype,
+                     device=hs.device,
+                 )
+                 local_arg = torch.zeros(
+@@ -779,9 +792,7 @@ class DFlashWorkerV2(BaseSpecWorker):
+             if num_added > 0:
+                 added_slice_start = num_org_padded
+                 added_slice_end = num_org_padded + num_added
+-                added_logits = torch.matmul(
+-                    hs, weight[added_slice_start:added_slice_end].T
+-                )
++                added_logits = logits[:, added_slice_start:added_slice_end]
+                 added_max, added_arg = torch.max(added_logits, dim=-1)
+                 use_added = added_max > local_max
+                 local_max = torch.where(use_added, added_max, local_max)

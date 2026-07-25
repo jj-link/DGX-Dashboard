@@ -1,0 +1,147 @@
+From 02a1f23711c5bdbff81eb8a610dde39e1141d036 Mon Sep 17 00:00:00 2001
+From: Giancarlo Delfin <gdelfin@users.noreply.github.com>
+Date: Fri, 26 Jun 2026 00:00:00 +0000
+Subject: [PATCH] Backport grouped DFlash K-normalization
+
+Backport vLLM PR #46761 to the torch::Tensor CUDA API used by
+23002d3f368a5a24641301bc71e4ae15dae89a24. A 2-D RMSNorm weight selects
+one row from the outermost input dimension; a 1-D weight retains the
+existing broadcast behavior.
+---
+ csrc/layernorm_kernels.cu                  | 30 ++++++++++++++++++++++++----
+ vllm/model_executor/models/qwen3_dflash.py | 23 ++++++++++++---------
+ 2 files changed, 39 insertions(+), 14 deletions(-)
+
+diff --git a/csrc/layernorm_kernels.cu b/csrc/layernorm_kernels.cu
+--- a/csrc/layernorm_kernels.cu
++++ b/csrc/layernorm_kernels.cu
+@@ -19,14 +19,18 @@ __global__ void rms_norm_kernel(
+     const int64_t input_stride_d4,        // input.stride(-4)
+     const int64_t input_shape_d2,         // input.size(-2)
+     const int64_t input_shape_d3,         // input.size(-3)
+-    const scalar_t* __restrict__ weight,  // [hidden_size]
++    const scalar_t* __restrict__ weight,  // [hidden_size] or
++                                          // [num_groups, hidden_size]
++    const int64_t weight_stride,          // 0 or weight.stride(0)
+     const float epsilon, const int num_tokens, const int hidden_size) {
+   __shared__ float s_variance;
+   float variance = 0.0f;
+   const scalar_t* input_row;
++  const scalar_t* weight_row;
+   if constexpr (NUM_DIMS == 2) {
+     // 2D for layernorm normal case [batch_size, hidden]
+     input_row = input + blockIdx.x * input_stride_d2;
++    weight_row = weight + blockIdx.x * weight_stride;
+   } else if constexpr (NUM_DIMS == 3) {
+     // 3D for q/k norm [batch_size, num_heads, head_size]
+     int batch_idx = blockIdx.x / input_shape_d2;
+@@ -33,6 +39,7 @@ __global__ void rms_norm_kernel(
+     int head_idx = blockIdx.x % input_shape_d2;
+     input_row =
+         input + batch_idx * input_stride_d3 + head_idx * input_stride_d2;
++    weight_row = weight + batch_idx * weight_stride;
+   } else if constexpr (NUM_DIMS == 4) {
+     // 4D for transformers model_impl qk norm [batch, seq, head, head_dim]
+     int batch_idx = blockIdx.x / (input_shape_d3 * input_shape_d2);
+@@ -41,6 +48,7 @@ __global__ void rms_norm_kernel(
+     int head_idx = remaining % input_shape_d2;
+     input_row = input + batch_idx * input_stride_d4 +
+                 seq_idx * input_stride_d3 + head_idx * input_stride_d2;
++    weight_row = weight + batch_idx * weight_stride;
+   }
+ 
+   auto vec_op = [&variance](const vec_n_t<scalar_t, VEC_SIZE>& vec) {
+@@ -68,7 +76,7 @@ __global__ void rms_norm_kernel(
+ 
+   scalar_t* out_row = out + blockIdx.x * hidden_size;
+   auto* v_in = reinterpret_cast<const vec_n_t<scalar_t, VEC_SIZE>*>(input_row);
+-  auto* v_w = reinterpret_cast<const vec_n_t<scalar_t, VEC_SIZE>*>(weight);
++  auto* v_w = reinterpret_cast<const vec_n_t<scalar_t, VEC_SIZE>*>(weight_row);
+   auto* v_out = reinterpret_cast<vec_n_t<scalar_t, VEC_SIZE>*>(out_row);
+   for (int i = threadIdx.x; i < hidden_size / VEC_SIZE; i += blockDim.x) {
+     vec_n_t<scalar_t, VEC_SIZE> dst;
+@@ -191,14 +199,30 @@ fused_add_rms_norm_kernel(
+ 
+ void rms_norm(torch::Tensor& out,     // [..., hidden_size]
+               torch::Tensor& input,   // [..., hidden_size]
+-              torch::Tensor& weight,  // [hidden_size]
++              torch::Tensor& weight,  // [hidden_size] or [num_groups, hidden_size]
+               double epsilon) {
+   TORCH_CHECK(out.is_contiguous());
+   if (input.stride(-1) != 1) {
+     input = input.contiguous();
+   }
+   TORCH_CHECK(input.stride(-1) == 1);
+   TORCH_CHECK(weight.is_contiguous());
++  int64_t weight_stride = 0;
++  if (weight.dim() == 1) {
++    TORCH_CHECK(
++        weight.size(0) == input.size(-1),
++        "rms_norm 1D weight hidden size must match input hidden size");
++  } else if (weight.dim() == 2) {
++    TORCH_CHECK(
++        weight.size(0) == input.size(0),
++        "rms_norm 2D weight row count must match input outermost dimension");
++    TORCH_CHECK(
++        weight.size(1) == input.size(-1),
++        "rms_norm 2D weight hidden size must match input hidden size");
++    weight_stride = weight.stride(0);
++  } else {
++    TORCH_CHECK(false, "rms_norm weight must be 1D or 2D");
++  }
+ 
+   int hidden_size = input.size(-1);
+ 
+@@ -227,8 +249,8 @@ void rms_norm(torch::Tensor& out,     // [..., hidden_size]
+             <<<grid, block, 0, stream>>>(
+                 out.data_ptr<scalar_t>(), input.data_ptr<scalar_t>(),
+                 input_stride_d2, input_stride_d3, input_stride_d4,
+                 input_shape_d2, input_shape_d3, weight.data_ptr<scalar_t>(),
+-                epsilon, num_tokens, hidden_size);
++                weight_stride, epsilon, num_tokens, hidden_size);
+       });
+     });
+   });
+diff --git a/vllm/model_executor/models/qwen3_dflash.py b/vllm/model_executor/models/qwen3_dflash.py
+--- a/vllm/model_executor/models/qwen3_dflash.py
++++ b/vllm/model_executor/models/qwen3_dflash.py
+@@ -374,8 +374,11 @@ class DFlashQwen3Model(nn.Module):
+         else:
+             self._fused_kv_bias = None
+ 
+-        # K-norm weights: list of [head_dim] tensors, one per layer.
+-        self._k_norm_weights = [a.k_norm.weight.data for a in layers_attn]
++        # K-norm weights stacked into one contiguous [num_layers, head_dim]
++        # tensor so the per-layer K-norm runs as a single grouped kernel.
++        self._k_norm_weights = torch.stack(
++            [a.k_norm.weight.data for a in layers_attn], dim=0
++        ).contiguous()
+ 
+         # RoPE parameters
+         self._rope_head_size = attn0.rotary_emb.head_size
+@@ -457,15 +460,15 @@ class DFlashQwen3Model(nn.Module):
+         all_k = all_kv[0]  # [L, num_ctx, nkv, hd], contiguous
+         all_v = all_kv[1]  # [L, num_ctx, nkv, hd], contiguous
+ 
+-        # --- Per-layer RMSNorm K (3D: [num_ctx, nkv, hd] per layer) ---
++        # --- Grouped RMSNorm K across all layers ([L, num_ctx, nkv, hd]) ---
++        # The weight is selected per layer by the outermost (layer) index.
+         all_k_normed = torch.empty_like(all_k)
+-        for i in range(L):
+-            ops.rms_norm(
+-                all_k_normed[i],
+-                all_k[i],
+-                self._k_norm_weights[i],
+-                self._rms_norm_eps,
+-            )
++        ops.rms_norm(
++            all_k_normed,
++            all_k,
++            self._k_norm_weights,
++            self._rms_norm_eps,
++        )
+ 
+         # --- Fused RoPE across all layers ---
+         # View as [L * num_ctx, kv] so RoPE sees one big batch (no copy).
+-- 
+2.45.2

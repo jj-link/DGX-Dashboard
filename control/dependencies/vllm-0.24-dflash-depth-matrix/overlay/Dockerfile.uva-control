@@ -1,0 +1,2 @@
+FROM vllm:v0.24.0-dflash-depth-matrix-20260716
+COPY vllm/utils/platform_utils.py /usr/local/lib/python3.12/dist-packages/vllm/utils/platform_utils.py

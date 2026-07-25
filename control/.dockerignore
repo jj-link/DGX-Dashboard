@@ -1,0 +1,15 @@
+**
+!images/
+!images/**
+!serve/
+!serve/sglang/
+!serve/sglang/patch_sglang_eagle3.py
+!patches/
+!patches/qwen3-dflash-v1-mixed.py
+!patches/vllm-0.24-align-upstream/
+!patches/vllm-0.24-align-upstream/**
+!patches/vllm-0.24-dflash-depth-matrix/
+!patches/vllm-0.24-dflash-depth-matrix/**
+
+!moe_configs/
+!moe_configs/**

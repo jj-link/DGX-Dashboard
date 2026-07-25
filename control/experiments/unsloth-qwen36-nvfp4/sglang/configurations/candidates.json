@@ -1,0 +1,41 @@
+{
+  "image": "sha256:8c50d8465642f41fa43ac96dec1449c3ac4f377888d6f3dd6f0635d8dfcb9924",
+  "benchmark_concurrency": 1,
+  "shared": {
+    "context_length": 8192,
+    "mem_fraction_static": 0.88,
+    "max_running_requests": 4,
+    "chunked_prefill_size": 8192,
+    "max_prefill_tokens": 8192,
+    "kv_cache_dtype": "bfloat16",
+    "attention_backend": "flashinfer",
+    "linear_attention_prefill_backend": "triton",
+    "linear_attention_decode_backend": "flashinfer",
+    "fp4_gemm_backend": "auto",
+    "sampling_backend": "flashinfer",
+    "mamba_ssm_dtype": "bfloat16",
+    "radix_cache": false
+  },
+  "selected": {
+    "27b": {
+      "configuration": "dflash",
+      "draft_model": "z-lab/Qwen3.6-27B-DFlash",
+      "draft_revision": "0919688658996800f86b895034249700e9481106",
+      "draft_model_path": "/home/workbench/.cache/huggingface/hub/models--z-lab--Qwen3.6-27B-DFlash/snapshots/0919688658996800f86b895034249700e9481106",
+      "num_speculative_tokens": 8,
+      "draft_window": 2048,
+      "configuration_file": "/home/workbench/inference/experiments/unsloth-qwen36-nvfp4/sglang/configurations/launch-27b-dflash8-final.txt",
+      "evidence": "/home/workbench/inference/experiments/unsloth-qwen36-nvfp4/results/raw/27b-sglang-dflash8-final-c1/benchmark-result.json"
+    },
+    "35b_a3b": {
+      "configuration": "dflash",
+      "draft_model": "z-lab/Qwen3.6-35B-A3B-DFlash",
+      "draft_revision": "42d3b34d588423cdae7ba8f53a8cf7789346a719",
+      "draft_model_path": "/home/workbench/.cache/huggingface/hub/models--z-lab--Qwen3.6-35B-A3B-DFlash/snapshots/42d3b34d588423cdae7ba8f53a8cf7789346a719",
+      "num_speculative_tokens": 8,
+      "draft_window": 6144,
+      "configuration_file": "/home/workbench/inference/experiments/unsloth-qwen36-nvfp4/sglang/configurations/launch-35b-dflash8-final.txt",
+      "evidence": "/home/workbench/inference/experiments/unsloth-qwen36-nvfp4/results/raw/35b-sglang-dflash8-final-c1/benchmark-result.json"
+    }
+  }
+}

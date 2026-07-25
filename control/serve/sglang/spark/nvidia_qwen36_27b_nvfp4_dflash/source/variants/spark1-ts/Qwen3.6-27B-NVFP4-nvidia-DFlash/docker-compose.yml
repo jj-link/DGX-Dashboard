@@ -1,0 +1,65 @@
+services:
+  qwen36-27b-nvfp4-nvidia-dflash:
+    image: sglang:modelopt-pr30078
+    container_name: sglang-qwen36-27b-nvfp4-nvidia-dflash
+    restart: "no"
+    ports:
+      - "8000:30000"
+    ipc: host
+    shm_size: 32g
+    volumes:
+      - ${HOME}/models:/models
+    environment:
+      HF_TOKEN: ${HF_TOKEN}
+      HF_HOME: /models
+      SGLANG_ENABLE_SPEC_V2: "1"
+      SGLANG_ENABLE_JIT_DEEPGEMM: "0"
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
+    command:
+      - python3
+      - -m
+      - sglang.launch_server
+      - --model-path
+      - /models/hub/models--nvidia--Qwen3.6-27B-NVFP4/snapshots/0893e1606ff3d5f97a441f405d5fc541a6bdf404
+      - --host
+      - 0.0.0.0
+      - --port
+      - "30000"
+      - --served-model-name
+      - Qwen3.6-27B-NVFP4-NVIDIA-DFLASH
+      - --trust-remote-code
+      - --tp-size
+      - "1"
+      - --attention-backend
+      - flashinfer
+      - --context-length
+      - "262144"
+      - --speculative-algorithm
+      - DFLASH
+      - --speculative-draft-model-path
+      - /models/hub/models--z-lab--Qwen3.6-27B-DFlash/snapshots/0919688658996800f86b895034249700e9481106
+      - --speculative-num-draft-tokens
+      - "20"
+      - --speculative-draft-window-size
+      - "4096"
+      - --mamba-scheduler-strategy
+      - extra_buffer
+      - --tool-call-parser
+      - qwen3_coder
+      - --reasoning-parser
+      - qwen3
+      - --mem-fraction-static
+      - "0.85"
+      - --max-running-requests
+      - "8"
+      - --enable-metrics
+      - --cuda-graph-max-bs
+      - "16"
+      - --chunked-prefill-size
+      - "2048"

@@ -1,0 +1,197 @@
+diff --git a/aider/coders/base_coder.py b/aider/coders/base_coder.py
+index 5661378..14d2db2 100755
+--- a/aider/coders/base_coder.py
++++ b/aider/coders/base_coder.py
+@@ -1626,6 +1626,8 @@ class Coder:
+         pass
+ 
+     def show_exhausted_error(self):
++        if os.environ.get("AIDER_SUPPRESS_TOKEN_LIMIT_WARNINGS") == "1":
++            return
+         output_tokens = 0
+         if self.partial_response_content:
+             output_tokens = self.main_model.token_count(self.partial_response_content)
+@@ -1837,9 +1839,6 @@ class Coder:
+         # Stop spinner once we have a response
+         self._stop_waiting_spinner()
+ 
+-        if self.verbose:
+-            print(completion)
+-
+         if not completion.choices:
+             self.io.tool_error(str(completion))
+             return
+@@ -1889,8 +1888,6 @@ class Coder:
+ 
+         show_resp = replace_reasoning_tags(show_resp, self.reasoning_tag_name)
+ 
+-        self.io.assistant_output(show_resp, pretty=self.show_pretty())
+-
+         if (
+             hasattr(completion.choices[0], "finish_reason")
+             and completion.choices[0].finish_reason == "length"
+@@ -1960,15 +1957,6 @@ class Coder:
+             elif text:
+                 # Apply reasoning tag formatting
+                 text = replace_reasoning_tags(text, self.reasoning_tag_name)
+-                try:
+-                    sys.stdout.write(text)
+-                except UnicodeEncodeError:
+-                    # Safely encode and decode the text
+-                    safe_text = text.encode(sys.stdout.encoding, errors="backslashreplace").decode(
+-                        sys.stdout.encoding
+-                    )
+-                    sys.stdout.write(safe_text)
+-                sys.stdout.flush()
+                 yield text
+ 
+         if not received_content:
+diff --git a/aider/exceptions.py b/aider/exceptions.py
+index cc803ff..b734cf2 100644
+--- a/aider/exceptions.py
++++ b/aider/exceptions.py
+@@ -76,7 +76,9 @@ class LiteLLMExceptions:
+                     raise ValueError(f"{var} is in litellm but not in aider's exceptions list")
+ 
+         for var in self.exception_info:
+-            ex = getattr(litellm, var)
++            ex = getattr(litellm, var, None)
++            if ex is None:
++                continue
+             self.exceptions[ex] = self.exception_info[var]
+ 
+     def exceptions_tuple(self):
+diff --git a/benchmark/benchmark.py b/benchmark/benchmark.py
+index cc694a9..4fd4b25 100755
+--- a/benchmark/benchmark.py
++++ b/benchmark/benchmark.py
+@@ -266,7 +266,6 @@ def main(
+         if languages:
+             requested = set(lang.strip().lower() for lang in languages.split(","))
+             lang_dirs = [d for d in lang_dirs if d.name.lower() in requested]
+-            dump(lang_dirs)
+             if not lang_dirs:
+                 print(f"No matching language directories found for: {languages}")
+                 return []
+@@ -322,7 +321,8 @@ def main(
+ 
+     resource_metadata = importlib_resources.files("aider.resources").joinpath("model-metadata.json")
+     model_metadata_files_loaded = models.register_litellm_models([resource_metadata])
+-    dump(model_metadata_files_loaded)
++    if verbose:
++        dump(model_metadata_files_loaded)
+ 
+     if read_model_settings:
+         try:
+@@ -788,6 +788,9 @@ def run_test_real(
+         yes=True,
+         chat_history_file=history_fname,
+     )
++    if not verbose:
++        io.assistant_output = lambda *args, **kwargs: None
++        io.tool_output = lambda *args, **kwargs: None
+ 
+     # weak_model_name = model_name
+     weak_model_name = None
+@@ -806,18 +809,13 @@ def run_test_real(
+     if thinking_tokens is not None:
+         main_model.set_thinking_tokens(thinking_tokens)
+ 
+-    dump(main_model.max_chat_history_tokens)
+-
+     if num_ctx:
+         if not main_model.extra_params:
+             main_model.extra_params = {}
+         main_model.extra_params["num_ctx"] = num_ctx
+     edit_format = edit_format or main_model.edit_format
+ 
+-    dump(main_model)
+-    dump(edit_format)
+     show_fnames = ",".join(map(str, fnames))
+-    print("fnames:", show_fnames)
+ 
+     coder = Coder.create(
+         main_model,
+@@ -825,16 +823,18 @@ def run_test_real(
+         io,
+         fnames=fnames,
+         use_git=False,
+-        stream=False,
++        # stream=False short-circuits self.stream = stream AND main_model.streaming
++        # (base_coder.py:424), forcing non-streaming regardless of ModelSettings.
++        # With streaming actually disabled, long reasoning responses on slow
++        # backends exceed LiteLLM's request timeout and enter a retry-loop.
++        # stream=True lets ModelSettings.streaming take effect.
++        stream=True,
+         verbose=verbose,
+         # auto_lint=False,  # disabled for code-in-json experiments
+         cache_prompts=True,
+         suggest_shell_commands=False,
+         ignore_mentions=ignore_files,
+     )
+-    dump(coder.ignore_mentions)
+-
+-    coder.show_announcements()
+     coder.get_file_mentions = lambda x: set()  # No loading of any other files
+ 
+     timeouts = 0
+@@ -867,9 +867,9 @@ def run_test_real(
+         if not no_aider:
+             pat = r"^[+]? *[#].* [.][.][.] "
+             # Count the number of lines that match pat in response
+-            dump(response)
+             lazy_comments += len(re.findall(pat, response, re.MULTILINE))
+-            dump(lazy_comments)
++            if verbose:
++                dump(lazy_comments)
+ 
+         if coder.last_keyboard_interrupt:
+             raise KeyboardInterrupt
+@@ -900,7 +900,6 @@ def run_test_real(
+         syntax_errors += sum(1 for line in errors if line.startswith("SyntaxError"))
+         indentation_errors += sum(1 for line in errors if line.startswith("IndentationError"))
+ 
+-        print(errors[-1])
+         errors = "\n".join(errors)
+         instructions = errors
+         instructions += prompts.test_failures.format(file_list=file_list)
+@@ -971,8 +970,6 @@ def run_test_real(
+     if edit_format == "architect":
+         results["editor_model"] = main_model.editor_model.name if main_model.editor_model else None
+         results["editor_edit_format"] = main_model.editor_edit_format
+-    dump(results)
+-
+     results_fname.write_text(json.dumps(results, indent=4))
+ 
+     return results
+@@ -1009,7 +1006,6 @@ def run_unit_tests(original_dname, testdir, history_fname, test_files):
+         src = original_dname / Path(*testdir.parts[-4:]) / file_path
+         dst = testdir / file_path
+         if src.exists():
+-            print("copying", src, dst)
+             os.makedirs(dst.parent, exist_ok=True)
+             shutil.copy(src, dst)
+ 
+@@ -1022,8 +1018,6 @@ def run_unit_tests(original_dname, testdir, history_fname, test_files):
+                 content = re.sub(r"@Disabled\([^)]*\)\s*\n", "", content)
+                 test_file.write_text(content)
+ 
+-    print(" ".join(command))
+-
+     result = subprocess.run(
+         command,
+         stdout=subprocess.PIPE,
+@@ -1038,13 +1032,11 @@ def run_unit_tests(original_dname, testdir, history_fname, test_files):
+     success = result.returncode == 0
+     res = result.stdout
+     res = cleanup_test_output(res, testdir)
+-    dump(res)
+ 
+     with history_fname.open("a") as fh:
+         fh.write(f"```\n{res}\n```")
+ 
+     if not success:
+-        print(f"Tests failed: {testdir}")
+         return res
+ 
+ 

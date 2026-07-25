@@ -1,0 +1,219 @@
+{
+  "schema_version": 1,
+  "created_utc": "2026-07-10T16:40:00Z",
+  "host": {
+    "wsl_distribution": "NVIDIA-Workbench",
+    "gpu": {
+      "index": 0,
+      "name": "NVIDIA RTX PRO 6000 Blackwell Workstation Edition",
+      "uuid": "GPU-6ac06ab6-ac30-f3ad-b246-064a8e6f1309",
+      "driver_version": "595.97",
+      "memory_mib": 97887
+    },
+    "required_environment": {
+      "CUDA_DEVICE_ORDER": "PCI_BUS_ID",
+      "CUDA_VISIBLE_DEVICES": "0"
+    }
+  },
+  "models": {
+    "27b": {
+      "repository": "unsloth/Qwen3.6-27B-NVFP4",
+      "revision": "9c295353cf85c4047fb45c27847e6c4b58596f3f",
+      "updated_utc": "2026-07-10T12:50:12Z",
+      "local_path": "/mnt/c/Users/josep/Models/unsloth-qwen36/Qwen3.6-27B-NVFP4-9c295353",
+      "download_metadata_verified": true,
+      "file_count": 20,
+      "total_bytes": 23443107358,
+      "weight_shards": 5,
+      "architecture": "Qwen3_5ForConditionalGeneration",
+      "model_type": "qwen3_5",
+      "text_layers": 64,
+      "mtp_hidden_layers": 1,
+      "mtp_present": true,
+      "quantization": {
+        "method": "compressed-tensors",
+        "format": "mixed-precision",
+        "fp8_targets": [
+          "self_attn q/k/v/o projections",
+          "linear_attn in_proj_qkv/in_proj_z/out_proj",
+          "lm_head",
+          "MLP projections in layers 56-63"
+        ],
+        "nvfp4_targets": ["MLP gate/up/down projections"],
+        "nvfp4_group_size": 16
+      },
+      "tokenizer": {
+        "eos_token": "<|im_end|>",
+        "pad_token": "<|vision_pad|>",
+        "tokenizer_json_bytes": 19989425,
+        "vocab_json_bytes": 5234494
+      }
+    },
+    "35b_a3b_fast": {
+      "repository": "unsloth/Qwen3.6-35B-A3B-NVFP4-Fast",
+      "revision": "11fb1afff493ad0d94c808ceecdf73b8215ccc7a",
+      "updated_utc": "2026-07-10T12:49:07Z",
+      "local_path": "/mnt/c/Users/josep/Models/unsloth-qwen36/Qwen3.6-35B-A3B-NVFP4-Fast-11fb1aff",
+      "download_metadata_verified": true,
+      "file_count": 18,
+      "total_bytes": 23690102028,
+      "weight_shards": 5,
+      "architecture": "Qwen3_5MoeForConditionalGeneration",
+      "model_type": "qwen3_5_moe",
+      "text_layers": 40,
+      "experts": 256,
+      "experts_per_token": 8,
+      "mtp_hidden_layers": 1,
+      "mtp_present": true,
+      "quantization": {
+        "method": "compressed-tensors",
+        "format": "mixed-precision",
+        "fp8_targets": [
+          "self_attn q/k/v/o projections",
+          "linear_attn in_proj_qkv/in_proj_z/out_proj",
+          "lm_head"
+        ],
+        "nvfp4_targets": [
+          "routed expert gate/up/down projections",
+          "shared expert gate/up/down projections"
+        ],
+        "nvfp4_group_size": 16
+      },
+      "tokenizer": {
+        "eos_token": "<|im_end|>",
+        "pad_token": "<|endoftext|>",
+        "tokenizer_json_bytes": 19989425,
+        "vocab_json_bytes": 6722759
+      },
+      "metadata_note": "The model-card base_model tag incorrectly names Qwen3.6-27B. The pinned config and successful vLLM load resolve Qwen3_5MoeForConditionalGeneration; loading is not affected."
+    }
+  },
+  "draft_models": {
+    "27b": {
+      "repository": "z-lab/Qwen3.6-27B-DFlash",
+      "cached_revision": "0919688658996800f86b895034249700e9481106",
+      "local_path": "/home/workbench/.cache/huggingface/hub/models--z-lab--Qwen3.6-27B-DFlash/snapshots/0919688658996800f86b895034249700e9481106"
+    },
+    "35b_a3b": {
+      "repository": "z-lab/Qwen3.6-35B-A3B-DFlash",
+      "cached_revision": "42d3b34d588423cdae7ba8f53a8cf7789346a719",
+      "local_path": "/home/workbench/.cache/huggingface/hub/models--z-lab--Qwen3.6-35B-A3B-DFlash/snapshots/42d3b34d588423cdae7ba8f53a8cf7789346a719"
+    }
+  },
+  "cache_inventory": {
+    "host_hf_cache_bytes_human": "288G",
+    "requested_repositories_preexisting_in_host_cache": false,
+    "older_unsloth_snapshots": [
+      {
+        "repository": "unsloth/Qwen3.6-27B-NVFP4",
+        "revision": "890bdef7a42feba6d83b6e17a03315c694112f2a",
+        "location": "Spark2/Spark3 cluster recipe /home/jjlink/models/hub; not conflated with this workstation snapshot"
+      }
+    ],
+    "related_cached_targets": [
+      {
+        "repository": "nvidia/Qwen3.6-27B-NVFP4",
+        "revision": "0893e1606ff3d5f97a441f405d5fc541a6bdf404"
+      },
+      {
+        "repository": "RedHatAI/Qwen3.6-35B-A3B-NVFP4",
+        "revision": "e850c696e6d75f965367e816c16bc7dacd955ffa"
+      }
+    ],
+    "docker_volumes": [
+      {"name": "sglang-compile-cache", "size": "527.6MB", "model_cache": false},
+      {"name": "vllm-compile-cache", "size": "36.99GB", "model_cache": false},
+      {"name": "vllm-b12x-fi0614-cache", "size": "1.09GB", "model_cache": false},
+      {"name": "vllm-mrv2-compile-cache-standard", "size": "601.7kB", "model_cache": false}
+    ]
+  },
+  "runtimes": {
+    "vllm": {
+      "version": "0.24.0",
+      "image": "vllm/vllm-openai@sha256:251eba5cc7c12fed0b75da22a9240e582b1c9e39f6fbc064f86781b963bd814f",
+      "python": "3.12.13",
+      "torch": "2.11.0+cu130",
+      "flashinfer_python": "0.6.12",
+      "nvidia_cutlass_dsl": "4.5.2"
+    },
+    "sglang": {
+      "version": "0.5.15",
+      "image": "sha256:8c50d8465642f41fa43ac96dec1449c3ac4f377888d6f3dd6f0635d8dfcb9924",
+      "image_tag": "unsloth-qwen36-sglang:7de33ce8-mixed-ct-dflashq-fi0614",
+      "base_image": "lmsysorg/sglang@sha256:af911a303a12516adf23ab8bb89c8fdf161ec0ceafc278a436fa111f5c118988",
+      "source_revision": "7de33ce806c12664b647604d61cf1403d2d18013",
+      "forward_ported_pr_tip": "6affa83fa3ab675ffbf16e1eb6b833992d9d388b",
+      "patch_sha256": "838341d55916a1d0f2d4dd819c0fef1ddb4b2b8f03490b2d32b8c7375343f50d",
+      "flashinfer_python": "0.6.14",
+      "sgl_deep_gemm": "0.1.4.post1",
+      "cuda_family": "cu130",
+      "build_evidence": "/home/workbench/inference/experiments/unsloth-qwen36-nvfp4/sglang/build-evidence.txt",
+      "stock_0_5_15_incompatibility": "The exact pinned 27B and 35B revisions fail startup with the stock 0.5.15 image before the experiment patch is applied.",
+      "stock_0_5_15_incompatibility_evidence": [
+        "/home/workbench/inference/experiments/unsloth-qwen36-nvfp4/results/raw/sglang-0.5.15-27b-baseline-startup-failure.log",
+        "/home/workbench/inference/experiments/unsloth-qwen36-nvfp4/results/raw/sglang-0.5.15-27b-mtp-startup-failure.log",
+        "/home/workbench/inference/experiments/unsloth-qwen36-nvfp4/results/raw/sglang-0.5.15-35b-baseline-startup-failure.log",
+        "/home/workbench/inference/experiments/unsloth-qwen36-nvfp4/results/raw/sglang-0.5.15-35b-mtp-startup-failure.log"
+      ]
+    }
+  },
+  "selected_concurrency_1_launchers": {
+    "vllm_27b": {
+      "configuration": "mtp",
+      "num_speculative_tokens": 4,
+      "mamba_cache_dtype": "bfloat16",
+      "mamba_ssm_cache_dtype": "bfloat16",
+      "launcher": "/home/workbench/inference/experiments/unsloth-qwen36-nvfp4/vllm/serve-27b.sh",
+      "configuration_file": "/home/workbench/inference/experiments/unsloth-qwen36-nvfp4/vllm/configurations/launch-27b-mtp4-statebf16.txt",
+      "evidence": "/home/workbench/inference/experiments/unsloth-qwen36-nvfp4/results/raw/27b-vllm-mtp4-statebf16-c1-restart/benchmark-result.json"
+    },
+    "vllm_35b_a3b": {
+      "configuration": "mtp",
+      "num_speculative_tokens": 4,
+      "mamba_cache_dtype": "bfloat16",
+      "mamba_ssm_cache_dtype": "bfloat16",
+      "launcher": "/home/workbench/inference/experiments/unsloth-qwen36-nvfp4/vllm/serve-35b-a3b.sh",
+      "configuration_file": "/home/workbench/inference/experiments/unsloth-qwen36-nvfp4/vllm/configurations/launch-35b-mtp4-statebf16.txt",
+      "evidence": "/home/workbench/inference/experiments/unsloth-qwen36-nvfp4/results/raw/35b-vllm-mtp4-statebf16-c1-restart/benchmark-result.json"
+    },
+    "sglang_27b": {
+      "configuration": "dflash",
+      "num_speculative_tokens": 8,
+      "draft_window": 2048,
+      "linear_attention_prefill_backend": "triton",
+      "linear_attention_decode_backend": "flashinfer",
+      "mamba_ssm_dtype": "bfloat16",
+      "launcher": "/home/workbench/inference/experiments/unsloth-qwen36-nvfp4/sglang/serve-27b.sh",
+      "configuration_file": "/home/workbench/inference/experiments/unsloth-qwen36-nvfp4/sglang/configurations/launch-27b-dflash8-final.txt",
+      "evidence": "/home/workbench/inference/experiments/unsloth-qwen36-nvfp4/results/raw/27b-sglang-dflash8-final-c1/benchmark-result.json"
+    },
+    "sglang_35b_a3b": {
+      "configuration": "dflash",
+      "num_speculative_tokens": 8,
+      "draft_window": 6144,
+      "linear_attention_prefill_backend": "triton",
+      "linear_attention_decode_backend": "flashinfer",
+      "mamba_ssm_dtype": "bfloat16",
+      "launcher": "/home/workbench/inference/experiments/unsloth-qwen36-nvfp4/sglang/serve-35b-a3b.sh",
+      "configuration_file": "/home/workbench/inference/experiments/unsloth-qwen36-nvfp4/sglang/configurations/launch-35b-dflash8-final.txt",
+      "evidence": "/home/workbench/inference/experiments/unsloth-qwen36-nvfp4/results/raw/35b-sglang-dflash8-final-c1/benchmark-result.json"
+    }
+  },
+  "preserved_service": {
+    "container": "vllm-b12x-fi0614-candidate",
+    "image": "qwen-vllm:b12x-fi0614",
+    "host_port": 8000,
+    "final_state": "running on 127.0.0.1:8000; /v1/models returned nvidia-qwen36-27b-nvfp4-b12x",
+    "preservation_verification": {
+      "restored_container_and_model": true,
+      "production_files_unchanged": "unavailable",
+      "image_identity_unchanged": "unavailable",
+      "volume_identity_unchanged": "unavailable",
+      "launch_command_identity_unchanged": "unavailable"
+    },
+    "evidence": [
+      "/home/workbench/inference/experiments/unsloth-qwen36-nvfp4/results/raw/production-restoration/docker-ps.jsonl",
+      "/home/workbench/inference/experiments/unsloth-qwen36-nvfp4/results/raw/production-restoration/v1-models.json"
+    ]
+  }
+}

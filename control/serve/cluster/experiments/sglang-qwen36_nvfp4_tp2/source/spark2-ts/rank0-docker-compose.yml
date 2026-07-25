@@ -1,0 +1,19 @@
+services:
+  ray-head:
+    image: rayproject/ray:2.41.0-py311
+    container_name: ray-head
+    restart: "no"
+    network_mode: host
+    ipc: host
+    volumes:
+      - ${HOME}/models:/models
+    environment:
+      RAY_ADDRESS: "10.0.0.1:6379"
+    command:
+      - ray
+      - start
+      - --head
+      - --node-ip-address=10.0.0.1
+      - --port=6379
+      - --num-gpus=0
+      - --dashboard-host=0.0.0.0

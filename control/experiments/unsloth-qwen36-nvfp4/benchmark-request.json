@@ -1,0 +1,7 @@
+{
+  "prompt": "Write a long coherent technical essay of at least 5,000 tokens about GPU inference optimization, kernel fusion, quantization, and speculative decoding. Develop every section fully and do not conclude early.",
+  "max_tokens": 5000,
+  "temperature": 0.3,
+  "top_p": 0.95,
+  "seed": 42
+}

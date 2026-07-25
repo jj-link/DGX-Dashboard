@@ -1,0 +1,9 @@
+- name: openai/LFM2.5-8B-A1B-PrismaQuant-6.5bit
+  edit_format: whole
+  use_repo_map: false
+  send_undo_reply: false
+  examples_as_sys_msg: true
+  streaming: true
+  extra_params:
+    max_tokens: 32767
+    temperature: 0.0

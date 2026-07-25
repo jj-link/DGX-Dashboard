@@ -1,0 +1,11 @@
+# AEON vLLM for x86_64 (RTX PRO 6000 Blackwell SM120) + DFlash speculative decoding.
+# Based on vllm/vllm-openai:latest + DFlash PR #40898 (same as qwen-vllm:dflash)
+# but with the AEON env vars baked in for compressed-tensors + NVFP4 support.
+FROM qwen-vllm:dflash
+
+# AEON-7 env vars for SM120 (not GB10 — ENABLE_NVFP4_SM100 stays 0)
+ENV TORCH_CUDA_ARCH_LIST="12.0+PTX"
+ENV ENABLE_NVFP4_SM100="0"
+ENV VLLM_USE_FLASHINFER_MOE_FP4="0"
+ENV VLLM_USE_FLASHINFER_SAMPLER="1"
+ENV VLLM_ALLOW_LONG_MAX_MODEL_LEN="1"

@@ -1,0 +1,48 @@
+SGLang mixed compressed-tensors + quantized DFlash build evidence
+Date: 2026-07-11
+
+Pinned inputs
+- Base image: lmsysorg/sglang@sha256:af911a303a12516adf23ab8bb89c8fdf161ec0ceafc278a436fa111f5c118988
+- SGLang source commit: 7de33ce806c12664b647604d61cf1403d2d18013
+- Forward-ported PR #16282 tip: 6affa83fa3ab675ffbf16e1eb6b833992d9d388b
+- Runtime dependencies: flashinfer-python 0.6.14, flashinfer-cubin 0.6.14, flashinfer-jit-cache 0.6.14+cu130, sgl-deep-gemm 0.1.4.post1
+- Patch SHA-256: 838341d55916a1d0f2d4dd819c0fef1ddb4b2b8f03490b2d32b8c7375343f50d
+
+Reproducible build
+- Working directory: /home/workbench/inference
+- Command: ./experiments/unsloth-qwen36-nvfp4/sglang/build.sh
+- Result: successful. Docker applied the pinned patch with git apply --check, then ran the focused CPU-safe suite: 13 passed, 21 warnings in 17.64 seconds.
+- Image tag: unsloth-qwen36-sglang:7de33ce8-mixed-ct-dflashq-fi0614
+- Immutable image ID: sha256:8c50d8465642f41fa43ac96dec1449c3ac4f377888d6f3dd6f0635d8dfcb9924
+- Labels verified with docker image inspect:
+  - org.opencontainers.image.revision=7de33ce806c12664b647604d61cf1403d2d18013
+  - io.unsloth.sglang.patch-sha256=838341d55916a1d0f2d4dd819c0fef1ddb4b2b8f03490b2d32b8c7375343f50d
+  - io.unsloth.sglang.flashinfer-version=0.6.14
+  - io.unsloth.sglang.deep-gemm-version=0.1.4.post1
+
+Behavioral verification
+1. Unpatched DFlash regression proof on the preceding pinned image:
+   docker run --rm -e PYTHONPATH=/tests -v /home/workbench/inference/experiments/unsloth-qwen36-nvfp4/sglang:/tests:ro -w /tmp --entrypoint python3 unsloth-qwen36-sglang:7de33ce8-mixed-ct-fi0614-scales -m pytest -q -p no:cacheprovider /tests/test_dflash_quantized_head.py
+   Result observed before that superseded tag was removed: 4 failed. The old _DflashDraftSampler accepted only a raw weight tensor and both graph/eager DFlash paths bypassed the target ParallelLMHead quantization method.
+
+2. Patched DFlash test during implementation:
+   The patched worker was bind-mounted over the pinned runtime and test_dflash_quantized_head.py was run directly.
+   Result: 4 passed. It verified single-token control block_size=2 and the exact configured DFlash block sizes 8, 12, and 16 used by both Qwen3.6 candidates. The corresponding graph-head output shapes were 1, 7, 11, and 15 tokens. Both graph sampler and eager path selected the quantized-logit winner and recorded one full-shape quant-method invocation per chunk.
+
+3. Final immutable-image focused suite:
+   docker run --rm -e PYTHONPATH=/tests -v /home/workbench/inference/experiments/unsloth-qwen36-nvfp4/sglang:/tests:ro -w /tmp --entrypoint python3 unsloth-qwen36-sglang:7de33ce8-mixed-ct-dflashq-fi0614 -m pytest -q -p no:cacheprovider /tests/test_compressed_tensors_mixed_precision.py /tests/test_qwen35_quantized_load.py /tests/test_dflash_quantized_head.py /tests/test_runtime_smoke.py
+   Result: 13 passed, 19 warnings in 10.98 seconds.
+   Covered contracts: per-group dense FP8/NVFP4 parsing and dispatch; MoE NVFP4 activation propagation; exact Qwen3.5/Qwen3.6 fused loader scale mappings; quantized ParallelLMHead DFlash graph/eager dispatch at exact configured block sizes; pinned dependency and launch-argument smoke checks.
+
+Artifact SHA-256 values
+- Dockerfile: 90798c70e821045a4b5b5e92c4ed6a80264a750fa62e862ca1835e6f41ac3b94
+- 0001-compressed-tensors-per-group-format.patch: 838341d55916a1d0f2d4dd819c0fef1ddb4b2b8f03490b2d32b8c7375343f50d
+- test_compressed_tensors_mixed_precision.py: ce986b13f10c0ddd22a29b66d1d859f5762501229291f425dc3ffe75887afc54
+- test_qwen35_quantized_load.py: dfeec51e493e6b0453762013795f9c37aae6a1849d1da6bfedf93dbab7e0b85e
+- test_dflash_quantized_head.py: cb3ae4f2b8aab0f31fc915c04c42e4e2e93509652dab698eb02003e4e4df0b7a
+- test_runtime_smoke.py: 097c8ab56b110e228a5c354fd76e556eff1e30472215e67ee88d35c286f7ba8f
+- build.sh: f9f96b3cae1aef97ec98a595525f0a197965639eaa17c3ca7d1a62b2ac38a857
+
+Storage and safety
+- Final df -B1 reported 28,849,803,264 bytes available on /dev/sdd.
+- No running container was stopped, removed, or modified. No GPU server was started, no port 8000 was touched, and no launchers, benchmarks, vLLM files, or results were modified.

@@ -1,0 +1,84 @@
+{
+  "controlled_delta": "The full sweeps differ only in vllm/v1/worker/gpu/model_states/mamba_hybrid.py; model_runner.py and the required UVA override are byte-identical.",
+  "corpus": {
+    "manifest_sha256": "6ac34bb8346ef170dae787e86b4aa767cf312024980e3558d70f22f41665eb63",
+    "observable_contracts": [
+      "exact full-file output",
+      "natural stop",
+      "no Markdown fence",
+      "retokenized length",
+      "external executable semantic checks",
+      "at least three measured recurrent-state block crossings"
+    ],
+    "path": "/home/workbench/inference/experiments/qwen36-27b-hybrid-depth-study/multiboundary-corpus-v1"
+  },
+  "depths": [
+    0,
+    2,
+    4,
+    8,
+    9,
+    10,
+    11,
+    12,
+    15,
+    16
+  ],
+  "drafter_model_id": "z-lab/Qwen3.6-27B-DFlash",
+  "engine_version": "vLLM 0.24.0",
+  "excluded_run": {
+    "path": "/home/workbench/inference/experiments/qwen36-27b-hybrid-depth-study/multiboundary-causal-results/invalid-original-without-uva",
+    "reason": "DFlash engine startup failed with RuntimeError: UVA is not available; retained as invalid infrastructure evidence and excluded from causal comparisons."
+  },
+  "images": {
+    "original_unpatched_uva": {
+      "image_id": "sha256:fc3f2e260f865437249678f2c4be359d421c441ef6e380100f7ae9b2b294c096",
+      "mamba_hybrid_sha256": "3f6f4f4158476269ce0440ed03a343c54d5f5b2789e7ae0be810ed62d192b783",
+      "model_runner_sha256": "6b804a54c4bef194c94be5f1e11bed418b5a792814aacb4344fe5affa57125f7",
+      "platform_utils_sha256": "4a8d6ea50b26f1828616d7ecc84fa8e42a339443c0c6a5a2532e2b63247cd1bf",
+      "tag": "vllm:qwen27-original-unpatched-uva"
+    },
+    "recurrent_state_fixed": {
+      "image_id": "sha256:dddd180f0782278e52e80f322f77cf3e464b1332e65fabcc65c322152fb23e6b",
+      "mamba_hybrid_sha256": "749663372d456c27bb724ef8da1a25ba9f10812ce07c05412d0c028651a36315",
+      "model_runner_sha256": "6b804a54c4bef194c94be5f1e11bed418b5a792814aacb4344fe5affa57125f7",
+      "platform_utils_sha256": "4a8d6ea50b26f1828616d7ecc84fa8e42a339443c0c6a5a2532e2b63247cd1bf",
+      "tag": "vllm:qwen27-recurrent-state-fixed"
+    },
+    "recurrent_state_trace": {
+      "image_id": "sha256:c81f82cf463fb3d7a7ad80c243b6bfec39c9cff367c38eb63e667d0e8daf1cd6",
+      "mamba_hybrid_sha256": "8ef211cdae5269278f884d96554d7b311c85d94cf0f53880f70949d84952d5a8",
+      "model_runner_sha256": "6b804a54c4bef194c94be5f1e11bed418b5a792814aacb4344fe5affa57125f7",
+      "platform_utils_sha256": "4a8d6ea50b26f1828616d7ecc84fa8e42a339443c0c6a5a2532e2b63247cd1bf",
+      "tag": "vllm:qwen27-recurrent-state-trace",
+      "use": "single-request live boundary trace only; excluded from latency comparison because logging synchronizes device state"
+    }
+  },
+  "purpose": "Controlled causal test of depth-dependent DFlash output corruption in the 27B Qwen3.6 hybrid GDN runtime.",
+  "runtime_invariants": {
+    "chunked_prefill": true,
+    "concurrency": 1,
+    "gpu_memory_utilization": 0.923,
+    "kv_cache_dtype": "fp8_e4m3",
+    "linear_backend": "cutlass",
+    "mamba_cache_dtype": "float16",
+    "mamba_ssm_cache_dtype": "float32",
+    "max_completion_tokens": 7000,
+    "max_model_len": 262144,
+    "max_num_batched_tokens": 8352,
+    "max_num_seqs": 16,
+    "minimum_decode_boundaries_per_request": 3,
+    "prefix_caching": true,
+    "request_order": [
+      "front",
+      "middle",
+      "end"
+    ],
+    "rounds": 3,
+    "seed": 424242,
+    "temperature": 0,
+    "warmup_requests_per_fresh_container": 1
+  },
+  "schema_version": 1,
+  "target_model_id": "nvidia/Qwen3.6-27B-NVFP4"
+}

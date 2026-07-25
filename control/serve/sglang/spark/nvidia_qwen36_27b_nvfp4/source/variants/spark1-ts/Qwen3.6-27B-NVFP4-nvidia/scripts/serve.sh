@@ -1,0 +1,2 @@
+#!/bin/bash
+exec python3 -m sglang.launch_server   --model-path /models/hub/models--nvidia--Qwen3.6-27B-NVFP4/snapshots/0893e1606ff3d5f97a441f405d5fc541a6bdf404   --host 0.0.0.0 --port 30000   --served-model-name Qwen3.6-27B-NVFP4-nvidia   --trust-remote-code --tp-size 1   --attention-backend flashinfer   --context-length 262144   --tool-call-parser qwen3_coder   --reasoning-parser qwen3   --mem-fraction-static 0.85   --max-running-requests 8   --enable-metrics   --cuda-graph-max-bs 16   --chunked-prefill-size 2048

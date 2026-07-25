@@ -1,0 +1,40 @@
+# DeepSeek-V4-Flash-DSpark with DSpark speculative decoding
+# Rank 1 - spark3 (1 GPU)
+services:
+  deepseek-v4-dspark:
+    image: vllm-dspark
+    container_name: vllm-deepseek-v4-dspark
+    restart: "no"
+    network_mode: host
+    shm_size: 1gb
+    volumes:
+      - /home/jjlink/models:/models
+    environment:
+      HF_HOME: /models
+      MASTER_ADDR: 10.0.0.1
+      MASTER_PORT: 55555
+      RANK: "1"
+      LOCAL_RANK: "0"
+      WORLD_SIZE: "2"
+      NCCL_SOCKET_IFNAME: enp1s0f1np1
+      NCCL_IB_DISABLE: "1"
+      GLOO_SOCKET_IFNAME: enp1s0f1np1
+      VLLM_USE_DEEP_GEMM: "0"
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]
+    command: >
+      /models/hub/models--deepseek-ai--DeepSeek-V4-Flash-DSpark
+      --served-model-name DeepSeek-V4-Flash-DSpark
+      --tensor-parallel-size 2
+      --distributed-executor-backend external_launcher
+      --trust-remote-code
+      --spec-method dspark
+      --spec-tokens 5
+      --kv-cache-dtype fp8
+      --host 0.0.0.0
+      --port 8000

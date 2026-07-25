@@ -1,0 +1,164 @@
+--- a/CMakeLists.txt
++++ b/CMakeLists.txt
+@@ -321,7 +321,7 @@
+   SET(CUTLASS_ENABLE_HEADERS_ONLY ON CACHE BOOL "Enable only the header library")
+ 
+   # Set CUTLASS_REVISION. Used for FetchContent. Also fixes some bogus messages when building.
+-  set(CUTLASS_REVISION "v4.4.2")
++  set(CUTLASS_REVISION "e8ecfad75b44d1ad56264f5001d877e9e47fe080")
+ 
+   # Use the specified CUTLASS source directory for compilation if VLLM_CUTLASS_SRC_DIR is provided
+   if (DEFINED ENV{VLLM_CUTLASS_SRC_DIR})
+@@ -345,7 +345,7 @@
+         # Speed up CUTLASS download by retrieving only the specified GIT_TAG instead of the history.
+         # Important: If GIT_SHALLOW is enabled then GIT_TAG works only with branch names and tags.
+         # So if the GIT_TAG above is updated to a commit hash, GIT_SHALLOW must be set to FALSE
+-        GIT_SHALLOW TRUE
++        GIT_SHALLOW FALSE
+     )
+   endif()
+   FetchContent_MakeAvailable(cutlass)
+--- a/csrc/libtorch_stable/quantization/w8a8/cutlass/c3x/scaled_mm_blockwise_sm120_fp8_dispatch.cuh
++++ b/csrc/libtorch_stable/quantization/w8a8/cutlass/c3x/scaled_mm_blockwise_sm120_fp8_dispatch.cuh
+@@ -17,6 +17,10 @@
+ #include "cutlass/epilogue/collective/collective_builder.hpp"
+ 
+ #include "cutlass_gemm_caller.cuh"
++#include "scaled_mm_blockwise_sm120_fp8_tactics.hpp"
++
++#include <cstdlib>
++#include <cstring>
+ 
+ namespace vllm {
+ 
+@@ -160,17 +164,66 @@
+       EpilogueSchedule, KernelSchedule>;
+ };
+ 
+-template <typename OutType>
++enum class Sm120BlockwiseFp8SwapABTileN : int32_t {
++  k8 = 8,
++  k16 = 16,
++  k32 = 32,
++};
++
++template <typename OutType, int TileN>
+ struct sm120_blockwise_fp8_config_swapab {
+-  // use 128x32x128 tile with Cooperative schedule
+-  using KernelSchedule = cutlass::gemm::KernelTmaWarpSpecializedBlockwiseCooperativeSm120;
++  static_assert(TileN == 8 || TileN == 16 || TileN == 32,
++                "SM120 blockwise FP8 swapAB supports tile N = 8, 16, or 32");
++  using KernelSchedule =
++      cutlass::gemm::KernelTmaWarpSpecializedBlockwiseCooperativeSm120;
+   using EpilogueSchedule = cutlass::epilogue::collective::EpilogueScheduleAuto;
+-  using TileShape = Shape<_128, _32, _128>;
++  using TileShape = Shape<_128, Int<TileN>, _128>;
+   using ClusterShape = Shape<_1, _1, _1>;
+   using Gemm = cutlass_3x_gemm_fp8_blockwise<
+       OutType, 128, 1, 128, TileShape, ClusterShape,
+       EpilogueSchedule, KernelSchedule, true>;
+ };
+ 
++inline int forced_sm120_blockwise_fp8_swapab_tile_n() {
++  static const int forced_tile_n = [] {
++    const char* value =
++        std::getenv("VLLM_SM120_BLOCKWISE_FP8_SWAPAB_TILE_N");
++    if (value == nullptr || value[0] == '\0') {
++      return 0;
++    }
++    if (std::strcmp(value, "8") == 0) {
++      return 8;
++    }
++    if (std::strcmp(value, "16") == 0) {
++      return 16;
++    }
++    if (std::strcmp(value, "32") == 0) {
++      return 32;
++    }
++    return -1;
++  }();
++  return forced_tile_n;
++}
++
++inline Sm120BlockwiseFp8SwapABTileN
++select_sm120_blockwise_fp8_swapab_tile_n(int32_t m, int32_t n, int32_t k) {
++  const int forced_tile_n = forced_sm120_blockwise_fp8_swapab_tile_n();
++  STD_TORCH_CHECK(
++      forced_tile_n != -1,
++      "VLLM_SM120_BLOCKWISE_FP8_SWAPAB_TILE_N must be 8, 16, or 32");
++  if (forced_tile_n != 0) {
++    return static_cast<Sm120BlockwiseFp8SwapABTileN>(forced_tile_n);
++  }
++
++  for (auto const& tactic : kSm120BlockwiseFp8SwapABTactics) {
++    if (tactic.m == m && tactic.n == n && tactic.k == k) {
++      STD_TORCH_CHECK(tactic.tile_n == 8 || tactic.tile_n == 16 ||
++                      tactic.tile_n == 32);
++      return static_cast<Sm120BlockwiseFp8SwapABTileN>(tactic.tile_n);
++    }
++  }
++  return Sm120BlockwiseFp8SwapABTileN::k32;
++}
++
+ template <typename Gemm>
+ void cutlass_gemm_caller_blockwise(torch::stable::Tensor& out, torch::stable::Tensor const& a,
+@@ -263,11 +316,31 @@
+     return cutlass_gemm_caller_blockwise<Gemm>(
+         out, a, b, a_scales, b_scales);
+   } else {
+-    // Swap A/B for small M to improve performance
+-    // Use TILE_N=32 as the minimum compatible tile size.
+-    using Gemm = typename sm120_blockwise_fp8_config_swapab<OutType>::Gemm;
+-    return cutlass_gemm_caller_blockwise<Gemm>(
+-        out, a, b, a_scales, b_scales);
++    // Swap A/B for small M. The physical N dimension is the original M.
++    // CUTLASS e8ecfad75b44 adds the 8 and 16 variants alongside 32.
++    const int32_t N = b.size(1);
++    const int32_t K = a.size(1);
++    switch (select_sm120_blockwise_fp8_swapab_tile_n(M, N, K)) {
++      case Sm120BlockwiseFp8SwapABTileN::k8: {
++        using Gemm =
++            typename sm120_blockwise_fp8_config_swapab<OutType, 8>::Gemm;
++        return cutlass_gemm_caller_blockwise<Gemm>(
++            out, a, b, a_scales, b_scales);
++      }
++      case Sm120BlockwiseFp8SwapABTileN::k16: {
++        using Gemm =
++            typename sm120_blockwise_fp8_config_swapab<OutType, 16>::Gemm;
++        return cutlass_gemm_caller_blockwise<Gemm>(
++            out, a, b, a_scales, b_scales);
++      }
++      case Sm120BlockwiseFp8SwapABTileN::k32: {
++        using Gemm =
++            typename sm120_blockwise_fp8_config_swapab<OutType, 32>::Gemm;
++        return cutlass_gemm_caller_blockwise<Gemm>(
++            out, a, b, a_scales, b_scales);
++      }
++    }
++    STD_TORCH_CHECK(false, "Invalid SM120 blockwise FP8 swapAB tile N");
+   }
+ }
+ 
+--- /dev/null
++++ b/csrc/libtorch_stable/quantization/w8a8/cutlass/c3x/scaled_mm_blockwise_sm120_fp8_tactics.hpp
+@@ -0,0 +1,20 @@
++#pragma once
++
++#include <array>
++#include <cstdint>
++
++namespace vllm {
++
++struct Sm120BlockwiseFp8Tactic {
++  int32_t m;
++  int32_t n;
++  int32_t k;
++  int32_t tile_n;
++};
++
++// Generated by experiments/fp8-tiles/tune_fp8_tiles.py. The empty table keeps
++// the existing tile-N=32 behavior until measurements are generated and applied.
++inline constexpr std::array<Sm120BlockwiseFp8Tactic, 0>
++    kSm120BlockwiseFp8SwapABTactics = {};
++
++}  // namespace vllm

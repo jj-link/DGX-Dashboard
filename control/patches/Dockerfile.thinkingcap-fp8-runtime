@@ -1,0 +1,7 @@
+ARG BASE_IMAGE=vllm:thinkingcap-model-op-aux5-invariant-v5
+FROM ${BASE_IMAGE}
+LABEL org.opencontainers.image.title="ThinkingCap Qwen3.6 27B native FP8 study runtime" \
+      org.opencontainers.image.source-checkpoint="bottlecapai/ThinkingCap-Qwen3.6-27B-FP8@f25072f4e15775ca0d017afd754c7b8da85a9ff5" \
+      org.opencontainers.image.base.digest="sha256:36985ad979cb947dab7c1fc3f0ff29ffbcbabab15102191c082d4f0bebf2085e"
+ENV VLLM_FP8_STUDY_CHECKPOINT=f25072f4e15775ca0d017afd754c7b8da85a9ff5
+COPY vllm-0.24-align-upstream/vllm/model_executor/warmup/deep_gemm_warmup.py /usr/local/lib/python3.12/dist-packages/vllm/model_executor/warmup/deep_gemm_warmup.py

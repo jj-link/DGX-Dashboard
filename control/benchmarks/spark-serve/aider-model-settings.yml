@@ -1,0 +1,57 @@
+# Aider model settings for the spark head-to-head.
+# Caps max_tokens so reasoning models don't think indefinitely on hard problems.
+# Pass via: ./benchmark.py --read-model-settings <this-file>
+#
+# Notes:
+# - 16384 is generous: enough for several thousand reasoning tokens plus the
+#   final code answer. Truncated responses score 0 anyway, which is the
+#   intended bench behavior for "model couldn't finish in budget."
+# - examples_as_sys_msg=true is the safer default for local models that
+#   weren't trained on aider-specific examples in the user role.
+# - edit_format=whole is the simplest format and most robust to reasoning
+#   leaks in the response stream.
+
+- name: openai/minimax-m2.7-reap
+  edit_format: whole
+  use_repo_map: false
+  send_undo_reply: false
+  examples_as_sys_msg: true
+  extra_params:
+    max_tokens: 8192
+    temperature: 0.0
+
+- name: openai/qwen36-27b-nvfp4
+  edit_format: whole
+  use_repo_map: false
+  send_undo_reply: false
+  examples_as_sys_msg: true
+  extra_params:
+    max_tokens: 8192
+    temperature: 0.0
+
+- name: openai/qwen36-27b-fp8
+  edit_format: whole
+  use_repo_map: false
+  send_undo_reply: false
+  examples_as_sys_msg: true
+  extra_params:
+    max_tokens: 8192
+    temperature: 0.0
+
+- name: openai/qwen36-35b-a3b-nvfp4
+  edit_format: whole
+  use_repo_map: false
+  send_undo_reply: false
+  examples_as_sys_msg: true
+  extra_params:
+    max_tokens: 8192
+    temperature: 0.0
+
+- name: openai/qwen36-35b-a3b-fp8
+  edit_format: whole
+  use_repo_map: false
+  send_undo_reply: false
+  examples_as_sys_msg: true
+  extra_params:
+    max_tokens: 8192
+    temperature: 0.0
