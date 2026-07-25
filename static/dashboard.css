@@ -1,0 +1,603 @@
+  :root {
+    --bg: #0a0a0f;
+    --surface: #12121a;
+    --surface2: #1a1a26;
+    --border: #2a2a3a;
+    --text: #e0e0e8;
+    --text-dim: #8888a0;
+    --green: #00e676;
+    --yellow: #ffca28;
+    --red: #ff5252;
+    --blue: #448aff;
+    --purple: #b388ff;
+    --cyan: #18ffff;
+    --orange: #ff9100;
+  }
+
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+
+  body {
+    font-family: 'JetBrains Mono', 'Fira Code', 'SF Mono', 'Consolas', monospace;
+    background: var(--bg);
+    color: var(--text);
+    min-height: 100vh;
+  }
+
+  /* ── Header ─────────────────────────────────────────────── */
+  .header {
+    background: var(--surface);
+    border-bottom: 1px solid var(--border);
+    padding: 16px 32px;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    position: sticky;
+    top: 0;
+    z-index: 100;
+  }
+
+  .logo {
+    font-size: 20px;
+    font-weight: 700;
+    color: var(--cyan);
+    letter-spacing: -0.5px;
+  }
+
+  .header-right {
+    display: flex;
+    align-items: center;
+    gap: 24px;
+    font-size: 12px;
+    color: var(--text-dim);
+  }
+
+  .header-stat {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+  }
+
+  .header-stat .label { color: var(--text-dim); }
+  .header-stat .value { color: var(--text); }
+
+  .status-dot {
+    width: 8px; height: 8px;
+    border-radius: 50%;
+    background: var(--green);
+    display: inline-block;
+    animation: pulse 2s ease-in-out infinite;
+  }
+
+  .status-dot.error { background: var(--red); }
+
+  @keyframes pulse {
+    0%, 100% { opacity: 1; }
+    50% { opacity: 0.4; }
+  }
+
+  /* ── Main layout ────────────────────────────────────────── */
+  .container {
+    max-width: 1600px;
+    margin: 0 auto;
+    padding: 24px 32px;
+  }
+
+  .section-title {
+    font-size: 10px;
+    text-transform: uppercase;
+    letter-spacing: 2px;
+    color: var(--text-dim);
+    margin-bottom: 12px;
+    padding-bottom: 6px;
+    border-bottom: 1px solid var(--border);
+  }
+
+  .section { margin-bottom: 24px; }
+
+  /* ── System bar ─────────────────────────────────────────── */
+  .system-bar {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 12px 20px;
+    display: flex;
+    align-items: center;
+    gap: 24px;
+  }
+
+  .sys-item {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+  }
+
+  .sys-dot {
+    width: 6px; height: 6px;
+    border-radius: 50%;
+  }
+
+  .sys-info { display: flex; flex-direction: column; }
+
+  .sys-label {
+    font-size: 9px;
+    color: var(--text-dim);
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+  }
+
+  .sys-value {
+    font-size: 13px;
+    font-weight: 600;
+  }
+
+  .sys-bar-wrap {
+    width: 80px;
+    height: 3px;
+    background: var(--surface2);
+    border-radius: 2px;
+    overflow: hidden;
+    margin-top: 2px;
+  }
+
+  .sys-bar-fill {
+    height: 100%;
+    border-radius: 2px;
+  }
+
+  /* ── GPU Grid ───────────────────────────────────────────── */
+  .gpu-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(350px, 1fr));
+    gap: 16px;
+    align-items: stretch;
+  }
+
+  .gpu-card {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    padding: 20px;
+    transition: border-color 0.3s;
+    display: flex;
+    flex-direction: column;
+  }
+
+  .gpu-card:hover { border-color: var(--cyan); }
+
+  .gpu-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    margin-bottom: 16px;
+  }
+
+  .gpu-name {
+    font-size: 14px;
+    font-weight: 600;
+    color: var(--cyan);
+  }
+
+  .gpu-index {
+    font-size: 10px;
+    color: var(--text-dim);
+    background: var(--surface2);
+    padding: 2px 8px;
+    border-radius: 3px;
+  }
+
+  .gpu-body {
+    display: grid;
+    grid-template-columns: 100px 1fr;
+    gap: 16px;
+    align-items: center;
+  }
+
+  /* Circular gauge */
+  .gauge {
+    width: 100px;
+    height: 100px;
+    position: relative;
+  }
+
+  .gauge svg {
+    transform: rotate(-90deg);
+    width: 100%;
+    height: 100%;
+  }
+
+  .gauge-bg {
+    fill: none;
+    stroke: var(--surface2);
+    stroke-width: 6;
+  }
+
+  .gauge-fill {
+    fill: none;
+    stroke-width: 6;
+    stroke-linecap: round;
+    transition: stroke-dashoffset 0.5s ease;
+  }
+
+  .gauge-center {
+    position: absolute;
+    top: 50%;
+    left: 50%;
+    transform: translate(-50%, -50%);
+    text-align: center;
+  }
+
+  .gauge-value {
+    font-size: 20px;
+    font-weight: 700;
+  }
+
+  .gauge-label {
+    font-size: 9px;
+    color: var(--text-dim);
+    text-transform: uppercase;
+  }
+
+  /* GPU metrics */
+  .gpu-metrics {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+  }
+
+  .metric-row {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 8px;
+  }
+
+  .metric-label {
+    font-size: 10px;
+    color: var(--text-dim);
+    min-width: 60px;
+  }
+
+  .metric-bar-container {
+    flex: 1;
+    height: 4px;
+    background: var(--surface2);
+    border-radius: 2px;
+    overflow: hidden;
+  }
+
+  .metric-bar {
+    height: 100%;
+    border-radius: 2px;
+    transition: width 0.5s ease;
+  }
+
+  .metric-value {
+    font-size: 11px;
+    font-weight: 600;
+    min-width: 80px;
+    text-align: right;
+  }
+
+  /* ── Server Grid ────────────────────────────────────────── */
+  .server-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(350px, 1fr));
+    gap: 16px;
+  }
+
+  .server-card {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    padding: 20px;
+    transition: border-color 0.3s;
+    display: flex;
+    flex-direction: column;
+  }
+
+  .server-card:hover { border-color: var(--purple); }
+  .server-card.offline { opacity: 0.5; }
+
+  .server-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    margin-bottom: 12px;
+  }
+
+  .server-name {
+    font-size: 14px;
+    font-weight: 600;
+    color: var(--purple);
+  }
+
+  .server-type {
+    font-size: 10px;
+    text-transform: uppercase;
+    letter-spacing: 1px;
+    color: var(--text-dim);
+    background: var(--surface2);
+    padding: 2px 8px;
+    border-radius: 4px;
+  }
+
+  .server-model {
+    font-size: 12px;
+    color: var(--text);
+    margin-bottom: 12px;
+    padding: 8px 12px;
+    background: var(--surface2);
+    border-radius: 6px;
+    word-break: break-all;
+  }
+
+  .server-stats {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 12px;
+  }
+
+  .sparkline {
+    display: flex;
+    align-items: flex-end;
+    gap: 2px;
+    height: 16px;
+    margin-top: 4px;
+    width: 100%;
+  }
+  .sparkline-bar {
+    flex: 1;
+    background: var(--green);
+    border-radius: 1px;
+    min-height: 1px;
+    transition: height 0.3s ease;
+  }
+
+  .server-stat {
+    flex: 1 1 calc(33.333% - 12px);
+    min-width: 110px;
+    text-align: center;
+    padding: 10px;
+    background: var(--surface2);
+    border-radius: 8px;
+  }
+
+  .server-stat-value {
+    font-size: 18px;
+    font-weight: 700;
+    line-height: 1.2;
+  }
+
+  .server-stat-label {
+    font-size: 9px;
+    color: var(--text-dim);
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+    margin-top: 2px;
+  }
+
+  .server-error {
+    background: var(--surface2);
+    border: 1px solid var(--red);
+    border-radius: 8px;
+    padding: 16px;
+    text-align: center;
+    color: var(--red);
+    font-size: 13px;
+  }
+
+  .no-servers {
+    text-align: center;
+    color: var(--text-dim);
+    padding: 40px;
+    font-size: 13px;
+  }
+
+  .no-servers code {
+    background: var(--surface2);
+    padding: 2px 6px;
+    border-radius: 3px;
+    font-size: 12px;
+  }
+
+  /* ── Host Group ──────────────────────────────────────────── */
+  #host-groups {
+    display: flex;
+    flex-direction: column;
+    gap: 24px;
+  }
+
+  .section-row {
+    display: flex;
+    gap: 24px;
+    align-items: stretch;
+  }
+
+  .section-col {
+    flex: 1;
+    min-width: 0;
+    display: flex;
+    flex-direction: column;
+  }
+
+  .section-col .gpu-grid {
+    flex: 1;
+    grid-auto-rows: 1fr;
+  }
+
+  .host-header {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    margin-bottom: 12px;
+    padding-bottom: 8px;
+    border-bottom: 2px solid var(--border);
+  }
+
+  .host-dot {
+    width: 8px; height: 8px;
+    border-radius: 50%;
+    background: var(--green);
+    box-shadow: 0 0 6px var(--green);
+  }
+
+  .host-name {
+    font-size: 14px;
+    font-weight: 700;
+    color: var(--cyan);
+    letter-spacing: 1px;
+  }
+
+  .host-subtitle {
+    font-size: 10px;
+    color: var(--text-dim);
+    margin-left: 4px;
+  }
+
+  /* ── Update flash ───────────────────────────────────────── */
+  .flash {
+    position: fixed;
+    top: 0; left: 0; right: 0;
+    height: 2px;
+    background: var(--cyan);
+    opacity: 0;
+    z-index: 200;
+    pointer-events: none;
+  }
+
+  .flash.active {
+    animation: flash 0.5s ease-out;
+  }
+
+  @keyframes flash {
+    0% { opacity: 0.8; }
+    100% { opacity: 0; }
+  }
+
+  /* ── Tab system ─────────────────────────────────────────── */
+  .tab-bar {
+    display: flex;
+    align-items: center;
+    gap: 4px;
+    padding: 0 8px;
+  }
+
+  .tab-btn {
+    font-family: inherit;
+    font-size: 11px;
+    text-transform: uppercase;
+    letter-spacing: 1px;
+    color: var(--text-dim);
+    background: none;
+    border: none;
+    padding: 6px 16px;
+    cursor: pointer;
+    border-bottom: 2px solid transparent;
+    transition: color 0.2s, border-color 0.2s;
+  }
+
+  .tab-btn:hover { color: var(--text); }
+  .tab-btn.active { color: var(--cyan); border-bottom-color: var(--cyan); }
+
+  .tab-panel { display: none; }
+  .tab-panel.active { display: block; }
+
+  /* ── Benchmark sub-tabs ──────────────────────────────────── */
+  .sub-tabs {
+    display: flex;
+    gap: 2px;
+    margin-bottom: 16px;
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    padding: 4px;
+  }
+
+  .sub-tab-btn {
+    font-family: inherit;
+    font-size: 11px;
+    color: var(--text-dim);
+    background: none;
+    border: 1px solid transparent;
+    padding: 6px 14px;
+    cursor: pointer;
+    border-radius: 4px;
+    transition: color 0.2s, background 0.2s;
+  }
+  .sub-tab-btn:hover { color: var(--text); background: var(--surface2); }
+  .sub-tab-btn.active { color: var(--green); background: var(--surface2); border-color: var(--green); }
+
+  .sub-tab-panel { display: none; }
+  .sub-tab-panel.active { display: block; }
+
+  /* ── Data tables ─────────────────────────────────────────── */
+  .data-table {
+    width: 100%;
+    border-collapse: collapse;
+    font-size: 14px;
+  }
+  .data-table th {
+    text-align: left;
+    font-size: 12px;
+    text-transform: uppercase;
+    letter-spacing: 1px;
+    color: var(--text-dim);
+    padding: 8px 12px;
+    border-bottom: 1px solid var(--border);
+    background: var(--surface2);
+    position: sticky;
+    top: 0;
+  }
+  .data-table td {
+    padding: 8px 12px;
+    border-bottom: 1px solid var(--border);
+    color: var(--text);
+    vertical-align: middle;
+  }
+  .data-table tr:hover td { background: var(--surface2); }
+  .data-table td.num {
+    text-align: right;
+    font-variant-numeric: tabular-nums;
+  }
+  .data-table .bar-cell {
+    width: 120px;
+  }
+  .table-bar-wrap {
+    width: 100%;
+    height: 6px;
+    background: var(--surface2);
+    border-radius: 3px;
+    overflow: hidden;
+  }
+  .table-bar {
+    height: 100%;
+    border-radius: 3px;
+    transition: width 0.3s ease;
+  }
+
+  /* Heatmap cell */
+  .hm-cell {
+    text-align: center;
+    padding: 8px 10px;
+    border-radius: 3px;
+    font-weight: 600;
+    font-size: 13.5px;
+  }
+
+  .bm-empty {
+    text-align: center;
+    color: var(--text-dim);
+    padding: 40px;
+    font-size: 13px;
+  }
+
+  /* ── Responsive ─────────────────────────────────────────── */
+  @media (max-width: 768px) {
+    .container { padding: 16px; }
+    .gpu-grid { grid-template-columns: 1fr; }
+    .server-grid { grid-template-columns: 1fr; }
+    .system-bar { flex-direction: column; gap: 16px; }
+    .header { padding: 12px 16px; }
+    .header-right { display: none; }
+    .section-row { flex-direction: column; }
+  }

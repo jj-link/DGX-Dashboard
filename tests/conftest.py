@@ -1,36 +1,123 @@
-"""conftest.py — shared fixtures for DGX Dashboard tests."""
+"""Shared deterministic fixtures for DGX Dashboard tests."""
 
-import os
-from unittest.mock import patch, MagicMock
+from __future__ import annotations
+
+from pathlib import Path
+from types import MappingProxyType
+
 import pytest
 
-@pytest.fixture
-def mock_network():
-    """Patch all network/hardware calls so tests don't need live services."""
-    mocks = {}
+from dgx_dashboard import create_app
+from dgx_dashboard.config import (
+    BenchmarkSettings,
+    DashboardSettings,
+    InferenceServerSettings,
+    ServerSettings,
+)
 
-    mock_requests = patch("requests.get", return_value=MagicMock(json=lambda: {}, status_code=200))
-    mock_subprocess = patch("subprocess.run", return_value=MagicMock(returncode=0, stdout=b"", stderr=b""))
-    mock_socket = patch("socket.socket", side_effect=ConnectionRefusedError("mocked"))
-
-    mocks["requests"] = mock_requests.start()
-    mocks["subprocess"] = mock_subprocess.start()
-    mocks["socket"] = mock_socket.start()
-
-    yield mocks
-
-    for m in mocks.values():
-        m.stop()
 
 @pytest.fixture
-def app(mock_network):
-    """Create the Flask app for testing."""
-    import server
-    server.app.config["TESTING"] = True
-    server.app.config["DEBUG"] = False
-    return server.app
+def settings(tmp_path: Path) -> DashboardSettings:
+    results = tmp_path / "benchmark-results"
+    return DashboardSettings(
+        source=tmp_path / "config.ini",
+        server=ServerSettings(
+            host="127.0.0.1",
+            port=9000,
+            refresh_interval=3,
+            auth_user="",
+            auth_password="",
+        ),
+        inference_servers=MappingProxyType(
+            {
+                "local": InferenceServerSettings(
+                    kind="sglang",
+                    url="http://127.0.0.1:8000",
+                )
+            }
+        ),
+        remote_hosts=MappingProxyType({}),
+        benchmarks=BenchmarkSettings(
+            results_dir=results,
+            aider_benchmarks_dir=tmp_path / "aider-benchmarks",
+            result_index_path=tmp_path / "result-index.json",
+        ),
+    )
+
+
+@pytest.fixture
+def stats_payload() -> dict[str, object]:
+    return {
+        "timestamp": "2026-07-25T14:00:00+00:00",
+        "gpus": [],
+        "servers": [
+            {
+                "name": "local",
+                "type": "sglang",
+                "url": "http://127.0.0.1:8000",
+                "online": False,
+                "error": "Connection refused",
+                "models": [],
+                "stats": {},
+            }
+        ],
+        "system": {
+            "hostname": "test-host",
+            "uptime": "1d 2h 3m",
+            "cpu_count": 16,
+            "mem_total": 1024,
+            "mem_used": 512,
+            "mem_available": 512,
+            "load_avg": [0.1, 0.2, 0.3],
+        },
+    }
+
+
+@pytest.fixture
+def benchmark_payload() -> dict[str, object]:
+    return {
+        "oneshot_table": [],
+        "multiturn_lang_table": [],
+        "quant_comparison_table": [],
+        "comparison_table": [],
+        "token_cost_table": [],
+        "multiturn_leaderboard": [],
+        "oneshot_leaderboard": {},
+        "multiturn_summary": [],
+    }
+
+
+class _StaticMonitoring:
+    def __init__(self, payload: dict[str, object]) -> None:
+        self._payload = payload
+
+    def collect(self) -> dict[str, object]:
+        return self._payload
+
+
+class _StaticBenchmarks:
+    def __init__(self, payload: dict[str, object]) -> None:
+        self._payload = payload
+
+    def get(self) -> dict[str, object]:
+        return self._payload
+
+
+@pytest.fixture
+def app(
+    settings: DashboardSettings,
+    stats_payload: dict[str, object],
+    benchmark_payload: dict[str, object],
+):
+    application = create_app(
+        settings,
+        monitoring=_StaticMonitoring(stats_payload),
+        benchmarks=_StaticBenchmarks(benchmark_payload),
+    )
+    application.config.update(TESTING=True, DEBUG=False)
+    return application
+
 
 @pytest.fixture
 def client(app):
-    """Test client for the Flask app."""
     return app.test_client()
