@@ -59,7 +59,7 @@ remote = arguments[-1]
 host = next((value for value in arguments if value in ("spark2-ts", "spark3-ts")), "unknown")
 match = re.search(r"run-node\\.sh'?\\s+(preflight|start|wait-rank|status|logs|verify|stop|port-clear)\\s+(vllm|sglang)\\s+([a-z0-9_]+)\\s+([01])", remote)
 action, engine, artifact, rank = match.groups() if match else ("unknown", "", "", "")
-record = {"host": host, "action": action, "engine": engine, "artifact": artifact, "rank": rank, "remote": remote}
+record = {"host": host, "action": action, "engine": engine, "artifact": artifact, "rank": rank, "remote": remote, "arguments": arguments}
 with pathlib.Path(os.environ["SSH_CAPTURE"]).open("a", encoding="utf-8") as stream:
     stream.write(json.dumps(record, sort_keys=True) + "\\n")
 scenario = os.environ.get("SCENARIO", "success")
@@ -111,6 +111,14 @@ def test_cluster_front_door() -> None:
         entries = records(capture)
         assert action_pairs(entries) == [("logs", "0"), ("logs", "1")]
         assert all("LOG_LINES=17" in entry["remote"] for entry in entries)
+        assert all(
+            any(
+                entry["arguments"][index : index + 2] == ["-o", option]
+                for index in range(len(entry["arguments"]) - 1)
+            )
+            for entry in entries
+            for option in ("ConnectTimeout=20", "ConnectionAttempts=3")
+        )
         assert not nvidia_capture.exists()
 
         capture.unlink()
