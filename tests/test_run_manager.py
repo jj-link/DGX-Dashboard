@@ -264,6 +264,32 @@ def test_serving_start_runs_exact_verify_followup(tmp_path):
 
 
 
+def test_serving_verification_does_not_block_run_reads(tmp_path):
+    root, state, commands, catalog = _make_builder(tmp_path)
+    _write_script(
+        root / "serve.sh",
+        "action=${4:-start}\n"
+        "printf 'action=%s\\n' \"$action\"\n"
+        "if [[ $action == verify ]]; then sleep 2; fi\n"
+        "if [[ $action == stop || $action == status ]]; then printf 'container=x state=absent\\n'; fi\n",
+    )
+    _write_script(root / "benchmark.sh", "exit 0\n")
+    manager = RunManager(state, catalog, commands, retention=20, cancel_grace=0.1)
+
+    submitted = manager.submit(_serving_operation(catalog, "local"))
+    deadline = time.monotonic() + 1
+    while "action=verify" not in manager.read_log(submitted["id"], 0, 65_536)["data"]:
+        assert time.monotonic() < deadline
+        time.sleep(0.01)
+
+    started = time.monotonic()
+    snapshot = manager.get(submitted["id"])
+    assert time.monotonic() - started < 0.5
+    assert snapshot["state"] == "running"
+    manager.cancel(submitted["id"])
+    assert _wait_terminal(manager, submitted["id"])["state"] == "cancelled"
+
+
 def test_serving_verify_failure_runs_stop_and_status_cleanup(tmp_path):
     root, state, commands, catalog = _make_builder(tmp_path)
     _write_script(

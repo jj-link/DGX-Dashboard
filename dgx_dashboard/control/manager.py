@@ -305,6 +305,7 @@ class RunManager:
         outcome, exit_code = self._wait_active(active, active.plan.command.timeout)
 
         if outcome == "exited" and exit_code == 0 and active.plan.verify is not None:
+            verification_started = False
             with self._lock:
                 record = self._records[run_id]
                 if record["state"] == "cancel_requested":
@@ -315,7 +316,9 @@ class RunManager:
                     except Exception:
                         outcome = "verification_launch_failed"
                     else:
-                        outcome, exit_code = self._wait_active(active, active.plan.verify.timeout)
+                        verification_started = True
+            if verification_started:
+                outcome, exit_code = self._wait_active(active, active.plan.verify.timeout)
 
         should_cleanup = outcome in {"cancelled", "timed_out"}
         if (

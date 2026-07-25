@@ -235,6 +235,8 @@ function renderSpark(key, color) {
 // ── Fetch and update ─────────────────────────────────────────────────────────
 
 async function fetchStats() {
+  if (statsRequestInFlight) return;
+  statsRequestInFlight = true;
   try {
     const resp = await fetch('/api/stats');
     if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
@@ -246,6 +248,9 @@ async function fetchStats() {
   } catch (e) {
     document.getElementById('status-dot').className = 'status-dot error';
     document.getElementById('status-text').textContent = 'Error: ' + e.message;
+  } finally {
+    statsRequestInFlight = false;
+    if (livePolling) pollTimer = setTimeout(fetchStats, refreshIntervalMs);
   }
 }
 
@@ -346,6 +351,20 @@ function flash() {
 }
 
 const refreshIntervalMs = Number(document.body.dataset.refreshInterval) * 1000;
-let pollTimer = setInterval(fetchStats, refreshIntervalMs);
+let pollTimer = null;
+let livePolling = false;
+let statsRequestInFlight = false;
 
-fetchStats();
+function startLivePolling() {
+  if (livePolling) return;
+  livePolling = true;
+  fetchStats();
+}
+
+function stopLivePolling() {
+  livePolling = false;
+  clearTimeout(pollTimer);
+  pollTimer = null;
+}
+
+startLivePolling();

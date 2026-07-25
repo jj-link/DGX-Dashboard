@@ -10,10 +10,9 @@ document.querySelectorAll('.tab-btn').forEach(btn => {
     document.querySelectorAll('.tab-panel').forEach(p => p.classList.remove('active'));
     document.getElementById('tab-' + tabId).classList.add('active');
     if (tabId === 'live') {
-      if (!pollTimer) pollTimer = setInterval(fetchStats, refreshIntervalMs);
+      startLivePolling();
     } else {
-      clearInterval(pollTimer);
-      pollTimer = null;
+      stopLivePolling();
       if (tabId === 'benchmarks' && !benchmarksData) fetchBenchmarks();
       if (tabId === 'control') document.dispatchEvent(new CustomEvent('dashboard:control-active'));
     }
