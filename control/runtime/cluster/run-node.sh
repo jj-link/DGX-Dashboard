@@ -194,7 +194,11 @@ preflight() {
   ip -4 -o addr show dev "$DIST_IF" | grep -Eq "[[:space:]]inet[[:space:]]+$NODE_ADDR/" || fail "$DIST_IF does not own $NODE_ADDR"
   ibv_devinfo -d "$RDMA_HCA" >/dev/null 2>&1 || fail "$RDMA_HCA is not an RDMA device"
   docker image inspect "$IMAGE" >/dev/null 2>&1 || fail "image '$IMAGE' is unavailable"
-  ! docker container inspect "$CONTAINER" >/dev/null 2>&1 || fail "container '$CONTAINER' already exists"
+  if docker container inspect "$CONTAINER" >/dev/null 2>&1; then
+    [[ -n "$PREFLIGHT_REPLACE_CONTAINER" ]] || fail "container '$CONTAINER' already exists"
+    [[ "$PREFLIGHT_REPLACE_CONTAINER" == "$CONTAINER" ]] ||
+      fail "target container '$CONTAINER' exists but replacement '$PREFLIGHT_REPLACE_CONTAINER' was requested"
+  fi
   if [[ -n "$PREFLIGHT_REPLACE_CONTAINER" ]]; then
     verify_replacement_container
     if [[ "$RANK" == 0 ]]; then

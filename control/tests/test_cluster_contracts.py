@@ -126,7 +126,7 @@ def test_cluster_front_door() -> None:
         environment["PREFLIGHT_ONLY"] = "1"
         old_image = "sha256:" + "2" * 64
         environment.update({
-            "PREFLIGHT_REPLACE_CONTAINER": "old-production",
+            "PREFLIGHT_REPLACE_CONTAINER": "old-production-head,old-production-worker",
             "PREFLIGHT_REPLACE_IMAGE_ID": old_image,
             "PREFLIGHT_REPLACE_NETWORK_MODE": "host",
         })
@@ -137,7 +137,8 @@ def test_cluster_front_door() -> None:
         assert "action=start" in completed.stderr
         assert "preflight complete" in completed.stdout
         assert action_pairs(records(capture)) == [("preflight", "0"), ("preflight", "1")]
-        assert all("PREFLIGHT_REPLACE_CONTAINER=old-production" in entry["remote"] for entry in records(capture))
+        assert "PREFLIGHT_REPLACE_CONTAINER=old-production-head" in records(capture)[0]["remote"]
+        assert "PREFLIGHT_REPLACE_CONTAINER=old-production-worker" in records(capture)[1]["remote"]
         assert all(f"PREFLIGHT_REPLACE_IMAGE_ID={old_image}" in entry["remote"] for entry in records(capture))
         assert all("PREFLIGHT_REPLACE_NETWORK_MODE=host" in entry["remote"] for entry in records(capture))
         assert not nvidia_capture.exists()
@@ -248,7 +249,7 @@ arguments = sys.argv[1:]
 with pathlib.Path(os.environ["DOCKER_CAPTURE"]).open("a", encoding="utf-8") as stream:
     stream.write(json.dumps(arguments) + "\\n")
 if arguments[:2] == ["container", "inspect"]:
-    if arguments[2] == "old-production":
+    if arguments[2] in {"old-production", os.environ.get("FAKE_TARGET_CONTAINER")}:
         print(json.dumps([{
             "State": {"Running": True},
             "Image": os.environ["FAKE_OLD_IMAGE_ID"],
@@ -324,6 +325,15 @@ def test_node_preflight_and_launch() -> None:
         completed = run(
             [str(NODE), "preflight", "vllm", "deepseek_ai_deepseek_v4_flash_dspark_tp2", "1"],
             worker_replacement_environment,
+        )
+        assert completed.returncode == 0, completed.stderr
+        same_name_environment = dict(replacement_environment)
+        same_name = "inference-cluster-vllm-deepseek-v4-flash-dspark-tp2-rank0"
+        same_name_environment["PREFLIGHT_REPLACE_CONTAINER"] = same_name
+        same_name_environment["FAKE_TARGET_CONTAINER"] = same_name
+        completed = run(
+            [str(NODE), "preflight", "vllm", "deepseek_ai_deepseek_v4_flash_dspark_tp2", "0"],
+            same_name_environment,
         )
         assert completed.returncode == 0, completed.stderr
         mismatched_environment = dict(replacement_environment)

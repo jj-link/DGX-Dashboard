@@ -83,12 +83,26 @@ controller_commit() {
 EXPECTED_COMMIT="$(git -C "$REPO_ROOT" rev-parse HEAD 2>/dev/null || true)"
 
 run_remote() {
-  local host="$1" node_action="$2" rank="$3"
+  local host="$1" node_action="$2" rank="$3" replacement_container=''
   local -a command=(env "EXPECTED_COMMIT=$EXPECTED_COMMIT")
   [[ -z "${HF_CACHE+x}" ]] || command+=("HF_CACHE=$HF_CACHE")
   [[ -z "${CLUSTER_PROFILE+x}" ]] || command+=("CLUSTER_PROFILE=$CLUSTER_PROFILE")
   [[ -z "${LOG_LINES+x}" ]] || command+=("LOG_LINES=$LOG_LINES")
-  [[ -z "${PREFLIGHT_REPLACE_CONTAINER+x}" ]] || command+=("PREFLIGHT_REPLACE_CONTAINER=$PREFLIGHT_REPLACE_CONTAINER")
+  if [[ -n "${PREFLIGHT_REPLACE_CONTAINER+x}" ]]; then
+    replacement_container="$PREFLIGHT_REPLACE_CONTAINER"
+    if [[ "$replacement_container" == *,* ]]; then
+      local head_container='' worker_container='' extra_container=''
+      IFS=, read -r head_container worker_container extra_container <<<"$replacement_container"
+      [[ -n "$head_container" && -n "$worker_container" && -z "$extra_container" ]] ||
+        fail "PREFLIGHT_REPLACE_CONTAINER must contain one name or exactly two comma-separated rank names"
+      if [[ "$rank" == 0 ]]; then
+        replacement_container="$head_container"
+      else
+        replacement_container="$worker_container"
+      fi
+    fi
+    command+=("PREFLIGHT_REPLACE_CONTAINER=$replacement_container")
+  fi
   [[ -z "${PREFLIGHT_REPLACE_IMAGE_ID+x}" ]] || command+=("PREFLIGHT_REPLACE_IMAGE_ID=$PREFLIGHT_REPLACE_IMAGE_ID")
   [[ -z "${PREFLIGHT_REPLACE_NETWORK_MODE+x}" ]] || command+=("PREFLIGHT_REPLACE_NETWORK_MODE=$PREFLIGHT_REPLACE_NETWORK_MODE")
   command+=("$REMOTE_REPO_ROOT/control/runtime/cluster/run-node.sh" "$node_action" "$ENGINE" "$ARTIFACT" "$rank")
