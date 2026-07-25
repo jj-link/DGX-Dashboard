@@ -365,10 +365,10 @@ for mount in container.get("Mounts", []):
   if [[ "$RANK" == 1 ]]; then
     if [[ "$ENGINE" == vllm ]]; then
       [[ "$command_line" == *"--headless"* ]] || fail "container '$CONTAINER' vLLM worker is not headless"
+      port_clear || fail "vLLM worker port '$API_PORT' is listening"
     else
       [[ "$command_line" != *"--headless"* ]] || fail "container '$CONTAINER' SGLang worker uses an unsupported headless flag"
     fi
-    port_clear || fail "worker port '$API_PORT' is listening"
   fi
   logs="$(docker logs "$CONTAINER" 2>&1)"
   grep -Fq "topology rank=$RANK world_size=$WORLD_SIZE master=$MASTER_ADDR:$MASTER_PORT dist_if=$DIST_IF rdma_hca=$RDMA_HCA" <<<"$logs" || fail "container '$CONTAINER' logs do not prove the expected topology"

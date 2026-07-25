@@ -418,7 +418,10 @@ def test_sglang_worker_verification_contract() -> None:
         temp = pathlib.Path(temporary)
         fake_bin = temp / "bin"
         fake_bin.mkdir()
-        executable(fake_bin / "ss", "#!/bin/bash\nexit 0\n")
+        executable(
+            fake_bin / "ss",
+            "#!/bin/bash\nprintf '%s\\n' 'LISTEN 0 128 127.0.0.1:8888 0.0.0.0:*'\n",
+        )
         executable(
             fake_bin / "docker",
             """#!/usr/bin/env python3
