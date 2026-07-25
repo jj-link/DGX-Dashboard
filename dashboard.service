@@ -9,7 +9,7 @@ ExecStart=/home/workbench/Projects/personal/dgx-dashboard/venv/bin/python /home/
 Restart=on-failure
 UMask=0027
 RestartSec=5
-Environment=PATH=/home/workbench/.local/bin:/usr/bin:/bin
+Environment=PATH=/home/workbench/.local/bin:/usr/lib/wsl/lib:/usr/bin:/bin
 EnvironmentFile=-/var/lib/dgx-dashboard/dashboard.env
 
 [Install]
