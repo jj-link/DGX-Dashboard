@@ -340,6 +340,7 @@ def test_node_preflight_and_launch() -> None:
             for required in ("--gpus", "--network", "--ipc", "--device", "--cap-drop", "--security-opt", "--read-only", "--pids-limit"):
                 assert required in run_arguments, (engine, rank, required)
             assert_pair(run_arguments, "--network", "host")
+            assert_pair(run_arguments, "--hostname", f"inference-{engine}-rank{rank}")
             assert_pair(run_arguments, "--device", "/dev/infiniband:/dev/infiniband")
             assert_pair(run_arguments, "--cap-drop", "ALL")
             assert_pair(run_arguments, "--security-opt", "no-new-privileges:true")

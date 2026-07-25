@@ -292,7 +292,7 @@ start_node() {
 
   docker run -d \
     --name "$CONTAINER" \
-    --hostname "$CONTAINER" \
+    --hostname "inference-${ENGINE}-rank${RANK}" \
     --gpus all \
     --network host \
     --ipc host \
