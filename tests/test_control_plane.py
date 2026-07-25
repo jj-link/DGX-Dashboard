@@ -284,6 +284,82 @@ def test_resolver_failures() -> None:
         assert expected in completed.stderr
 
 
+def test_single_preflight() -> None:
+    with tempfile.TemporaryDirectory() as temporary:
+        temp = pathlib.Path(temporary)
+        values = valid_values()
+        package = make_test_package(temp, values)
+        cache = temp / "cache"
+        make_cache(cache, values["MODEL"], values["MODEL_REVISION"])
+        fake_bin = temp / "bin"
+        fake_bin.mkdir()
+        marker = temp / "container-created"
+        old_image = "sha256:" + "2" * 64
+        docker = fake_bin / "docker"
+        docker.write_text(
+            """#!/usr/bin/env python3
+import json
+import os
+from pathlib import Path
+import sys
+
+arguments = sys.argv[1:]
+if arguments[:2] == ["image", "inspect"]:
+    raise SystemExit(0)
+if arguments[:2] == ["container", "inspect"]:
+    name = arguments[2]
+    if name == "contract-container":
+        raise SystemExit(1)
+    if name == "old-production":
+        print(json.dumps([{
+            "State": {"Running": True},
+            "Image": os.environ["FAKE_OLD_IMAGE_ID"],
+            "HostConfig": {
+                "PortBindings": {
+                    "8000/tcp": [{"HostIp": "127.0.0.1", "HostPort": "8000"}]
+                }
+            },
+        }]))
+        raise SystemExit(0)
+    raise SystemExit(1)
+if arguments and arguments[0] == "run":
+    Path(os.environ["CONTAINER_MARKER"]).write_text("created", encoding="utf-8")
+raise SystemExit(90)
+""",
+            encoding="utf-8",
+        )
+        docker.chmod(0o755)
+        environment = minimal_environment(temp / "home")
+        environment.update({
+            "PATH": f"{fake_bin}:/usr/bin:/bin",
+            "HF_CACHE": str(cache),
+            "OFFLINE": "1",
+            "PREFLIGHT_ONLY": "1",
+            "PREFLIGHT_REPLACE_CONTAINER": "old-production",
+            "PREFLIGHT_REPLACE_IMAGE_ID": old_image,
+            "FAKE_OLD_IMAGE_ID": old_image,
+            "CONTAINER_MARKER": str(marker),
+        })
+        completed = run(
+            [str(ROOT / "runtime" / "rtx6000" / "run_vllm_docker.sh"), str(package)],
+            environment,
+        )
+        assert completed.returncode == 0, completed.stderr
+        assert "docker run " in completed.stdout
+        assert "preflight complete; no container created" in completed.stdout
+        assert not marker.exists()
+
+        mismatched = dict(environment)
+        mismatched["PREFLIGHT_REPLACE_IMAGE_ID"] = "sha256:" + "3" * 64
+        rejected = run(
+            [str(ROOT / "runtime" / "rtx6000" / "run_vllm_docker.sh"), str(package)],
+            mismatched,
+        )
+        assert rejected.returncode == 1
+        assert "replacement container 'old-production' image is" in rejected.stderr
+        assert not marker.exists()
+
+
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("group", choices=("all", "dispatcher", "runtime"), nargs="?", default="all")
@@ -291,6 +367,7 @@ def main() -> int:
     if arguments.group in {"all", "runtime"}:
         test_metadata_parser()
         test_resolver_failures()
+        test_single_preflight()
     if arguments.group in {"all", "dispatcher"}:
         test_dispatcher()
         test_gpu_detection()

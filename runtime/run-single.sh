@@ -31,6 +31,15 @@ done
 
 OFFLINE="${OFFLINE:-0}"
 [[ "$OFFLINE" == 0 || "$OFFLINE" == 1 ]] || fail "OFFLINE must be 0 or 1"
+PREFLIGHT_ONLY="${PREFLIGHT_ONLY:-0}"
+[[ "$PREFLIGHT_ONLY" == 0 || "$PREFLIGHT_ONLY" == 1 ]] || fail "PREFLIGHT_ONLY must be 0 or 1"
+PREFLIGHT_REPLACE_CONTAINER="${PREFLIGHT_REPLACE_CONTAINER:-}"
+PREFLIGHT_REPLACE_IMAGE_ID="${PREFLIGHT_REPLACE_IMAGE_ID:-}"
+if [[ -n "$PREFLIGHT_REPLACE_CONTAINER" || -n "$PREFLIGHT_REPLACE_IMAGE_ID" ]]; then
+  [[ "$PREFLIGHT_ONLY" == 1 ]] || fail "PREFLIGHT_REPLACE_CONTAINER and PREFLIGHT_REPLACE_IMAGE_ID require PREFLIGHT_ONLY=1"
+  [[ "$PREFLIGHT_REPLACE_CONTAINER" =~ ^[A-Za-z0-9][A-Za-z0-9_.-]*$ ]] || fail "PREFLIGHT_REPLACE_CONTAINER is invalid"
+  [[ "$PREFLIGHT_REPLACE_IMAGE_ID" =~ ^sha256:[0-9a-f]{64}$ ]] || fail "PREFLIGHT_REPLACE_IMAGE_ID must be an immutable Docker image ID"
+fi
 DETACH="${DETACH:-0}"
 KEEP="${KEEP:-0}"
 [[ "$DETACH" == 0 || "$DETACH" == 1 ]] || fail "DETACH must be 0 or 1"
@@ -233,10 +242,63 @@ if [[ "$OFFLINE" == 1 ]]; then
 fi
 container_args+=(--entrypoint /bin/bash "${META[IMAGE]}" /run/inference/package/serve.sh "${EXTRA_ARGS[@]}")
 
-if [[ "${SERVE_DRY_RUN:-0}" == 1 ]]; then
+print_docker_command() {
   printf 'docker'
   printf ' %q' "${container_args[@]}"
   printf '\n'
+}
+
+verify_replacement_container() {
+  python3 - "$PREFLIGHT_REPLACE_CONTAINER" "$PREFLIGHT_REPLACE_IMAGE_ID" "$BIND_ADDRESS" "$HOST_PORT" <<'PY'
+import json
+import subprocess
+import sys
+
+name, expected_image, bind_address, host_port = sys.argv[1:]
+completed = subprocess.run(
+    ["docker", "container", "inspect", name],
+    text=True,
+    capture_output=True,
+)
+if completed.returncode:
+    raise SystemExit(f"replacement container {name!r} is unavailable")
+rows = json.loads(completed.stdout)
+if len(rows) != 1:
+    raise SystemExit(f"expected exactly one replacement container named {name!r}")
+container = rows[0]
+if not container.get("State", {}).get("Running"):
+    raise SystemExit(f"replacement container {name!r} is not running")
+if container.get("Image") != expected_image:
+    raise SystemExit(
+        f"replacement container {name!r} image is {container.get('Image')!r}; "
+        f"expected {expected_image!r}"
+    )
+actual_bindings = container.get("HostConfig", {}).get("PortBindings", {}).get("8000/tcp")
+expected_bindings = [{"HostIp": bind_address, "HostPort": host_port}]
+if actual_bindings != expected_bindings:
+    raise SystemExit(
+        f"replacement container {name!r} binding is {actual_bindings!r}; "
+        f"expected {expected_bindings!r}"
+    )
+PY
+}
+
+verify_port_available() {
+  python3 - "$BIND_ADDRESS" "$HOST_PORT" <<'PY'
+import socket
+import sys
+
+host, port = sys.argv[1], int(sys.argv[2])
+with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as listener:
+    try:
+        listener.bind((host, port))
+    except OSError as error:
+        raise SystemExit(f"port {host}:{port} is unavailable: {error}")
+PY
+}
+
+if [[ "${SERVE_DRY_RUN:-0}" == 1 ]]; then
+  print_docker_command
   exit 0
 fi
 [[ "${SERVE_DRY_RUN:-0}" == 0 ]] || fail "SERVE_DRY_RUN must be 0 or 1"
@@ -245,10 +307,21 @@ if ! docker image inspect "${META[IMAGE]}" >/dev/null 2>&1; then
   if [[ -x "$PACKAGE/build-image.sh" ]]; then
     fail "image '${META[IMAGE]}' is unavailable; run '$PACKAGE/build-image.sh'"
   fi
+  [[ "$PREFLIGHT_ONLY" == 0 ]] || fail "image '${META[IMAGE]}' is unavailable during preflight"
   [[ "$OFFLINE" == 0 ]] || fail "image '${META[IMAGE]}' is unavailable in offline mode"
   docker pull "${META[IMAGE]}"
 fi
 if docker container inspect "${META[CONTAINER_NAME]}" >/dev/null 2>&1; then
   fail "container '${META[CONTAINER_NAME]}' already exists; remove it before serving"
+fi
+if [[ "$PREFLIGHT_ONLY" == 1 ]]; then
+  if [[ -n "$PREFLIGHT_REPLACE_CONTAINER" ]]; then
+    verify_replacement_container
+  else
+    verify_port_available
+  fi
+  print_docker_command
+  printf 'preflight complete; no container created\n'
+  exit 0
 fi
 exec docker "${container_args[@]}"
