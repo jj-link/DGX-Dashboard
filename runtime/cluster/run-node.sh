@@ -234,6 +234,7 @@ start_node() {
   fi
 
   local -a environment=(
+    -e "HOME=/root/.cache"
     -e "MODEL_PATH=$MODEL_PATH"
     -e "DRAFTER_PATH=$DRAFTER_PATH"
     -e "SERVED=$SERVED"

@@ -345,6 +345,7 @@ def test_node_preflight_and_launch() -> None:
             assert_pair(run_arguments, "--security-opt", "no-new-privileges:true")
             expected_api = "100.64.0.8" if rank == "0" else "127.0.0.1"
             assert f"API_HOST={expected_api}" in run_arguments
+            assert "HOME=/root/.cache" in run_arguments
             assert "WORLD_SIZE=2" in run_arguments
             assert f"NODE_RANK={rank}" in run_arguments
             assert "NCCL_NET=IB" in run_arguments

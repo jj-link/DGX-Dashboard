@@ -25,6 +25,8 @@
     "/tmp:rw,nosuid,nodev,size=16g",
     "--mount",
     "type=volume,src=inference-vllm-spark-melcheikh_gemma4_31b_it_qat_nvfp4_blackwell-cache,dst=/root/.cache",
+    "--env",
+    "HOME=/root/.cache",
     "--publish",
     "100.64.0.1:8000:8000/tcp",
     "--mount",

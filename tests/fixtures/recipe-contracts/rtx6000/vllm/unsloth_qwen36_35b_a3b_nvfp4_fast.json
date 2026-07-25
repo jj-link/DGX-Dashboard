@@ -25,6 +25,8 @@
     "/tmp:rw,nosuid,nodev,size=16g",
     "--mount",
     "type=volume,src=inference-vllm-rtx6000-unsloth_qwen36_35b_a3b_nvfp4_fast-cache,dst=/root/.cache",
+    "--env",
+    "HOME=/root/.cache",
     "--publish",
     "127.0.0.1:8000:8000/tcp",
     "--mount",

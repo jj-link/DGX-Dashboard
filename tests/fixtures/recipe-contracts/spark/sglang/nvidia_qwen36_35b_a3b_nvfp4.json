@@ -25,6 +25,8 @@
     "/tmp:rw,nosuid,nodev,size=16g",
     "--mount",
     "type=volume,src=inference-sglang-spark-nvidia_qwen36_35b_a3b_nvfp4-cache,dst=/root/.cache",
+    "--env",
+    "HOME=/root/.cache",
     "--publish",
     "100.64.0.1:8000:8000/tcp",
     "--mount",

@@ -205,6 +205,7 @@ container_args+=(
   --ulimit memlock=-1
   --tmpfs /tmp:rw,nosuid,nodev,size=16g
   --mount "type=volume,src=${META[CONTAINER_NAME]}-cache,dst=/root/.cache"
+  --env HOME=/root/.cache
   --publish "$BIND_ADDRESS:$HOST_PORT:8000/tcp"
   --mount "type=bind,src=$PACKAGE,dst=/run/inference/package,readonly"
   --env "MODEL_PATH=$MODEL_PATH"

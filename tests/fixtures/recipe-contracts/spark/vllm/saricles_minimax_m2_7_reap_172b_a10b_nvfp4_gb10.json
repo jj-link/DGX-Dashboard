@@ -25,6 +25,8 @@
     "/tmp:rw,nosuid,nodev,size=16g",
     "--mount",
     "type=volume,src=inference-vllm-spark-saricles_minimax_m2_7_reap_172b_a10b_nvfp4_gb10-cache,dst=/root/.cache",
+    "--env",
+    "HOME=/root/.cache",
     "--publish",
     "100.64.0.1:8000:8000/tcp",
     "--mount",
