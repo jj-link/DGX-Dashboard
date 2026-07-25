@@ -122,48 +122,118 @@ def minimal_environment(home: pathlib.Path) -> dict[str, str]:
 
 
 def test_dispatcher() -> None:
-    package = ROOT / "serve" / "vllm" / "rtx6000" / "qwen36_27b_fp8"
-    metadata = parse_assignments(package / "runtime.env")
+    local_artifact = "qwen36_27b_fp8"
+    local_package = ROOT / "serve" / "vllm" / "rtx6000" / local_artifact
+    spark_artifact = "poolside_laguna_s_2_1_nvfp4_dflash"
+    metadata = parse_assignments(local_package / "runtime.env")
     with tempfile.TemporaryDirectory() as temporary:
         temp = pathlib.Path(temporary)
         cache = temp / "hf"
         make_cache(cache, metadata["MODEL"], metadata["MODEL_REVISION"])
+        fake_bin = temp / "bin"
+        fake_bin.mkdir()
+        write_fake_nvidia(fake_bin / "nvidia-smi", "NVIDIA RTX PRO 6000 Blackwell Workstation Edition\n")
+        expected_commit = "a" * 40
+        (fake_bin / "git").write_text(
+            "#!/usr/bin/env bash\n"
+            "case \"$*\" in\n"
+            "  *status*) exit 0 ;;\n"
+            "  *symbolic-ref*) exit 0 ;;\n"
+            "  *rev-parse*) printf '%s\\n' " + shlex.quote(expected_commit) + " ;;\n"
+            "esac\n",
+            encoding="utf-8",
+        )
+        (fake_bin / "git").chmod(0o755)
+        ssh_log = temp / "ssh.log"
+        (fake_bin / "ssh").write_text(
+            "#!/usr/bin/env bash\n"
+            f"printf '%s\\0' \"$@\" >{shlex.quote(str(ssh_log))}\n"
+            "printf 'remote stdout\\n'\n"
+            "printf 'remote stderr\\n' >&2\n"
+            "exit \"${SSH_EXIT:-0}\"\n",
+            encoding="utf-8",
+        )
+        (fake_bin / "ssh").chmod(0o755)
         environment = minimal_environment(temp / "home")
         environment.update({
-            "INFERENCE_PROFILE": "rtx6000",
+            "PATH": f"{fake_bin}:/usr/bin:/bin",
             "HF_CACHE": str(cache),
             "OFFLINE": "1",
             "SERVE_DRY_RUN": "1",
+            "HF_TOKEN": "do-not-forward",
         })
-        completed = run([str(SERVE), "qwen36_27b_fp8", "--contract-extra", "value with spaces"], environment)
+
+        completed = run(
+            [str(SERVE), "local", "vllm", local_artifact, "--contract-extra", "value with spaces"],
+            environment,
+        )
         assert completed.returncode == 0, completed.stderr
-        assert "target=single profile=rtx6000 engine=vllm artifact=qwen36_27b_fp8" in completed.stderr
+        assert "target=local profile=rtx6000 engine=vllm" in completed.stderr
         arguments = shlex.split(completed.stdout)
         command_index = arguments.index("/run/inference/package/serve.sh")
         assert arguments[command_index + 1:] == ["--contract-extra", "value with spaces"]
 
         help_result = run([str(SERVE), "--help"], environment)
         assert help_result.returncode == 0
-        assert "selected profile: rtx6000" in help_result.stdout
-        assert "available vllm/rtx6000 artifacts:" in help_result.stdout
-        assert "available sglang/rtx6000 artifacts:" in help_result.stdout
+        for catalog in (
+            "available vllm/rtx6000 artifacts:",
+            "available sglang/rtx6000 artifacts:",
+            "available vllm/spark artifacts:",
+            "available sglang/spark artifacts:",
+            "available cluster/vllm artifacts:",
+            "available cluster/sglang artifacts:",
+        ):
+            assert catalog in help_result.stdout
         assert "docker " not in help_result.stdout
+        assert not ssh_log.exists()
 
-        unknown = run([str(SERVE), "vllm", "does_not_exist"], environment)
+        for target, host in (("spark1", "spark1-ts"), ("spark2", "spark2-ts"), ("spark3", "spark3-ts")):
+            remote = run(
+                [str(SERVE), target, "vllm", spark_artifact, "--label", "value with spaces"],
+                {**environment, "HF_CACHE": "", "ATTENTION_BACKEND": "FLASH INFER"},
+            )
+            assert remote.returncode == 0, remote.stderr
+            assert remote.stdout == "remote stdout\n"
+            assert "remote stderr\n" in remote.stderr
+            assert f"target={target} host={host} profile=spark engine=vllm" in remote.stderr
+            ssh_arguments = ssh_log.read_bytes().split(b"\0")[:-1]
+            assert ssh_arguments[6].decode() == host
+            remote_command = ssh_arguments[7].decode()
+            assert expected_commit in remote_command
+            assert "HF_CACHE=" in remote_command
+            assert "ATTENTION_BACKEND=FLASH\\ INFER" in remote_command
+            assert "value\\ with\\ spaces" in remote_command
+            assert "HF_TOKEN" not in remote_command
+
+        failed_ssh = run(
+            [str(SERVE), "spark1", "vllm", spark_artifact],
+            {**environment, "SSH_EXIT": "23"},
+        )
+        assert failed_ssh.returncode == 23
+        assert failed_ssh.stdout == "remote stdout\n"
+        assert "remote stderr\n" in failed_ssh.stderr
+
+        for command in (
+            [str(SERVE), local_artifact],
+            [str(SERVE), "vllm", local_artifact],
+            [str(SERVE), "local", local_artifact],
+            [str(SERVE), "local", "llama.cpp", local_artifact],
+            [str(SERVE), "unknown", "vllm", local_artifact],
+        ):
+            ssh_log.unlink(missing_ok=True)
+            rejected = run(command, environment)
+            assert rejected.returncode == 2, (command, rejected.stderr)
+            assert "usage:" in rejected.stderr
+            assert not ssh_log.exists()
+
+        unknown = run([str(SERVE), "local", "vllm", "does_not_exist"], environment)
         assert unknown.returncode == 1
         assert "error: no rtx6000 vllm recipe named 'does_not_exist'" in unknown.stderr
-        assert "qwen36_27b_fp8" in unknown.stderr
 
         for artifact in (".", "..", "../escape", "/tmp/escape", "bad.name", "bad/name"):
-            rejected = run([str(SERVE), artifact], environment)
-            assert rejected.returncode == 1, (artifact, rejected.returncode, rejected.stderr)
+            rejected = run([str(SERVE), "local", "vllm", artifact], environment)
+            assert rejected.returncode == 1
             assert "invalid artifact name" in rejected.stderr
-
-        invalid_profile = dict(environment)
-        invalid_profile["INFERENCE_PROFILE"] = ""
-        rejected = run([str(SERVE), "qwen36_27b_fp8"], invalid_profile)
-        assert rejected.returncode == 1
-        assert "INFERENCE_PROFILE must be rtx6000 or spark" in rejected.stderr
 
         outside = temp / "outside-package"
         outside.mkdir()
@@ -172,7 +242,7 @@ def test_dispatcher() -> None:
         escape = ROOT / "serve" / "vllm" / "rtx6000" / "escapecontract"
         escape.symlink_to(outside, target_is_directory=True)
         try:
-            rejected = run([str(SERVE), "escapecontract"], environment)
+            rejected = run([str(SERVE), "local", "vllm", "escapecontract"], environment)
             assert rejected.returncode == 1
             assert "escapes" in rejected.stderr
         finally:
@@ -191,22 +261,16 @@ def test_gpu_detection() -> None:
         fake_bin.mkdir()
         environment = minimal_environment(temp / "home")
         environment["PATH"] = f"{fake_bin}:/usr/bin:/bin"
-        for name, profile in (
-            ("NVIDIA RTX PRO 6000 Blackwell Workstation Edition", "rtx6000"),
-            ("NVIDIA GB10", "spark"),
-        ):
-            write_fake_nvidia(fake_bin / "nvidia-smi", name + "\n")
-            completed = run([str(SERVE), "--help"], environment)
-            assert completed.returncode == 0, completed.stderr
-            assert f"selected profile: {profile}" in completed.stdout
-        write_fake_nvidia(fake_bin / "nvidia-smi", "NVIDIA GB10\nNVIDIA GB10\n")
-        rejected = run([str(SERVE), "--help"], environment)
-        assert rejected.returncode == 1
-        assert "unsupported GPU 'NVIDIA GB10\nNVIDIA GB10'" in rejected.stderr
-        write_fake_nvidia(fake_bin / "nvidia-smi", "Unknown GPU\n")
-        rejected = run([str(SERVE), "--help"], environment)
-        assert rejected.returncode == 1
-        assert "unsupported GPU 'Unknown GPU'; set INFERENCE_PROFILE=rtx6000 or spark" in rejected.stderr
+        command = [str(SERVE), "local", "vllm", "qwen36_27b_fp8"]
+        for output in ("NVIDIA GB10\n", "NVIDIA GB10\nNVIDIA GB10\n", "Unknown GPU\n", ""):
+            write_fake_nvidia(fake_bin / "nvidia-smi", output)
+            rejected = run(command, environment)
+            assert rejected.returncode == 1
+            assert "single-device commands must be initiated from the RTX workstation" in rejected.stderr
+
+        help_result = run([str(SERVE), "--help"], environment)
+        assert help_result.returncode == 0
+        assert "single-device commands must be initiated" not in help_result.stderr
 
 
 def make_test_package(root: pathlib.Path, values: dict[str, str], *, builder: bool = False) -> pathlib.Path:
@@ -360,6 +424,119 @@ raise SystemExit(90)
         assert not marker.exists()
 
 
+def test_cluster_dispatcher_actions() -> None:
+    package = ROOT / "serve" / "cluster" / "vllm" / "contractcluster"
+    package.mkdir()
+    try:
+        write_metadata(package / "runtime.env", valid_values())
+        for action in ("start", "status", "logs", "verify", "stop"):
+            script = package / f"{action}.sh"
+            script.write_text(
+                f"#!/usr/bin/env bash\nprintf '%s\\n' {shlex.quote(action)}\nprintf '<%s>\\n' \"$@\"\n",
+                encoding="utf-8",
+            )
+            script.chmod(0o755)
+        environment = minimal_environment(pathlib.Path("/tmp/unused-home"))
+        for arguments, expected in (
+            ([], "start"),
+            (["start"], "start"),
+            (["status"], "status"),
+            (["logs"], "logs"),
+            (["verify"], "verify"),
+            (["stop"], "stop"),
+        ):
+            completed = run([str(SERVE), "cluster", "vllm", "contractcluster", *arguments], environment)
+            assert completed.returncode == 0, completed.stderr
+            assert completed.stdout.splitlines()[0] == expected
+            assert f"action={expected}" in completed.stderr
+    finally:
+        for child in package.iterdir():
+            child.unlink()
+        package.rmdir()
+
+
+def test_remote_single_validation() -> None:
+    source = (ROOT / "runtime" / "spark" / "run-remote-single.sh").read_text(encoding="utf-8")
+    expected_commit = "a" * 40
+    with tempfile.TemporaryDirectory() as temporary:
+        temp = pathlib.Path(temporary)
+        checkout = temp / "inference"
+        checkout.mkdir()
+        (checkout / ".git").mkdir()
+        package = checkout / "serve" / "vllm" / "spark" / "artifact"
+        package.mkdir(parents=True)
+        write_metadata(package / "runtime.env", valid_values())
+        (package / "serve.sh").write_text("#!/usr/bin/env bash\n", encoding="utf-8")
+        runtime = checkout / "runtime" / "spark"
+        runtime.mkdir(parents=True)
+        marker = temp / "docker-marker"
+        runner = runtime / "run_vllm_docker.sh"
+        runner.write_text(
+            f"#!/usr/bin/env bash\nprintf '%s\\0' \"$@\" >{shlex.quote(str(marker))}\n",
+            encoding="utf-8",
+        )
+        runner.chmod(0o755)
+        remote = temp / "run-remote-single.sh"
+        remote.write_text(source.replace("ROOT=/home/jjlink/inference", f"ROOT={shlex.quote(str(checkout))}"), encoding="utf-8")
+        remote.chmod(0o755)
+
+        fake_bin = temp / "bin"
+        fake_bin.mkdir()
+        git = fake_bin / "git"
+        git.write_text(
+            "#!/usr/bin/env bash\n"
+            "case \"$*\" in\n"
+            "  *symbolic-ref*) [[ ${GIT_STATE:-clean} != detached ]] ;;\n"
+            "  *status*) [[ ${GIT_STATE:-clean} == dirty ]] && printf ' M changed\\n' ;;\n"
+            f"  *rev-parse*) [[ ${{GIT_STATE:-clean}} == mismatch ]] && printf '%s\\n' {'b' * 40} || printf '%s\\n' {expected_commit} ;;\n"
+            "esac\n",
+            encoding="utf-8",
+        )
+        git.chmod(0o755)
+        write_fake_nvidia(fake_bin / "nvidia-smi", "NVIDIA GB10\n")
+        environment = minimal_environment(temp / "home")
+        environment["PATH"] = f"{fake_bin}:/usr/bin:/bin"
+        command = [str(remote), expected_commit, "vllm", "artifact", "--label", "value with spaces"]
+
+        completed = run(command, environment)
+        assert completed.returncode == 0, completed.stderr
+        assert marker.read_bytes().split(b"\0")[-2] == b"value with spaces"
+
+        for updates, message in (
+            ({"GIT_STATE": "dirty"}, "is dirty"),
+            ({"GIT_STATE": "detached"}, "is detached"),
+            ({"GIT_STATE": "mismatch"}, "expected"),
+        ):
+            marker.unlink(missing_ok=True)
+            rejected = run(command, {**environment, **updates})
+            assert rejected.returncode == 1
+            assert message in rejected.stderr
+            assert not marker.exists()
+
+        marker.unlink(missing_ok=True)
+        write_fake_nvidia(fake_bin / "nvidia-smi", "NVIDIA RTX PRO 6000 Blackwell Workstation Edition\n")
+        rejected = run(command, environment)
+        assert rejected.returncode == 1
+        assert "exactly one NVIDIA GB10" in rejected.stderr
+        assert not marker.exists()
+
+        write_fake_nvidia(fake_bin / "nvidia-smi", "NVIDIA GB10\n")
+        rejected = run([str(remote), expected_commit, "vllm", "missing"], environment)
+        assert rejected.returncode == 1
+        assert "no spark vllm recipe" in rejected.stderr
+        assert not marker.exists()
+
+        outside = temp / "outside"
+        outside.mkdir()
+        write_metadata(outside / "runtime.env", valid_values())
+        (outside / "serve.sh").write_text("#!/usr/bin/env bash\n", encoding="utf-8")
+        (package.parent / "escape").symlink_to(outside, target_is_directory=True)
+        rejected = run([str(remote), expected_commit, "vllm", "escape"], environment)
+        assert rejected.returncode == 1
+        assert "escapes" in rejected.stderr
+        assert not marker.exists()
+
+
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("group", choices=("all", "dispatcher", "runtime"), nargs="?", default="all")
@@ -368,9 +545,11 @@ def main() -> int:
         test_metadata_parser()
         test_resolver_failures()
         test_single_preflight()
+        test_remote_single_validation()
     if arguments.group in {"all", "dispatcher"}:
         test_dispatcher()
         test_gpu_detection()
+        test_cluster_dispatcher_actions()
     print(f"control-plane {arguments.group}: passed")
     return 0
 

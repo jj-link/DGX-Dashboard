@@ -2,12 +2,24 @@
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)"
+# shellcheck source=runtime/single-environment.sh
+source "$ROOT/runtime/single-environment.sh"
 
 usage() {
   cat <<'EOF'
 usage:
-  ./serve.sh [vllm|sglang] <exact-artifact-name> [extra args...]
-  ./serve.sh cluster <vllm|sglang> <exact-artifact-name> [start|status|logs|verify|stop] [action args...]
+  ./serve.sh local   <vllm|sglang> <exact-artifact-name> [engine args...]
+  ./serve.sh spark1  <vllm|sglang> <exact-artifact-name> [engine args...]
+  ./serve.sh spark2  <vllm|sglang> <exact-artifact-name> [engine args...]
+  ./serve.sh spark3  <vllm|sglang> <exact-artifact-name> [engine args...]
+  ./serve.sh cluster <vllm|sglang> <exact-artifact-name> [status|logs|verify|stop]
+
+targets:
+  local    workstation (rtx6000)
+  spark1   spark1-ts (spark)
+  spark2   spark2-ts (spark)
+  spark3   spark3-ts (spark)
+  cluster  Spark 2 + Spark 3 cluster
 EOF
 }
 
@@ -16,24 +28,28 @@ fail() {
   exit 1
 }
 
+usage_error() {
+  usage >&2
+  exit 2
+}
+
 valid_artifact() {
   [[ "$1" =~ ^[a-z0-9][a-z0-9_]*$ ]]
 }
 
-detect_profile() {
+require_controller_gpu() {
   local gpu_name
-  if [[ ${INFERENCE_PROFILE+x} ]]; then
-    [[ "$INFERENCE_PROFILE" == rtx6000 || "$INFERENCE_PROFILE" == spark ]] || fail "INFERENCE_PROFILE must be rtx6000 or spark"
-    printf '%s\n' "$INFERENCE_PROFILE"
-    return
-  fi
-  command -v nvidia-smi >/dev/null 2>&1 || fail "unsupported GPU ''; set INFERENCE_PROFILE=rtx6000 or spark"
+  command -v nvidia-smi >/dev/null 2>&1 || fail "single-device commands must be initiated from the RTX workstation"
   gpu_name="$(nvidia-smi --query-gpu=name --format=csv,noheader)"
-  case "$gpu_name" in
-    'NVIDIA RTX PRO 6000 Blackwell Workstation Edition') printf 'rtx6000\n' ;;
-    'NVIDIA GB10') printf 'spark\n' ;;
-    *) fail "unsupported GPU '$gpu_name'; set INFERENCE_PROFILE=rtx6000 or spark" ;;
-  esac
+  [[ "$gpu_name" == 'NVIDIA RTX PRO 6000 Blackwell Workstation Edition' ]] || \
+    fail "single-device commands must be initiated from the RTX workstation"
+}
+
+controller_commit() {
+  [[ -d "$ROOT/.git" ]] || fail "'$ROOT' is not a Git checkout"
+  git -C "$ROOT" symbolic-ref -q HEAD >/dev/null || fail "'$ROOT' is detached"
+  [[ -z "$(git -C "$ROOT" status --porcelain --untracked-files=normal)" ]] || fail "'$ROOT' is dirty"
+  git -C "$ROOT" rev-parse HEAD
 }
 
 list_available() {
@@ -56,7 +72,7 @@ list_available() {
 }
 
 list_cluster() {
-  local engine="$1"
+  local engine="$1" destination_fd="${2:-2}"
   local package required
   local -a packages=()
   shopt -s nullglob
@@ -69,8 +85,10 @@ list_cluster() {
   done
   shopt -u nullglob
   if ((${#packages[@]})); then
-    printf 'available cluster/%s artifacts:\n' "$engine" >&2
-    printf '  %s\n' "${packages[@]}" | LC_ALL=C sort >&2
+    {
+      printf 'available cluster/%s artifacts:\n' "$engine"
+      printf '  %s\n' "${packages[@]}" | LC_ALL=C sort
+    } >&"$destination_fd"
   fi
 }
 
@@ -107,53 +125,70 @@ resolve_cluster_script() {
 }
 
 if [[ "${1:-}" == -h || "${1:-}" == --help ]]; then
-  [[ $# == 1 ]] || { usage >&2; exit 2; }
-  profile="$(detect_profile)"
+  [[ $# == 1 ]] || usage_error
   usage
-  printf 'selected profile: %s\n' "$profile"
-  list_available vllm "$profile" 1
-  list_available sglang "$profile" 1
+  list_available vllm rtx6000 1
+  list_available sglang rtx6000 1
+  list_available vllm spark 1
+  list_available sglang spark 1
+  list_cluster vllm 1
+  list_cluster sglang 1
   exit 0
 fi
 
-if [[ "${1:-}" == cluster ]]; then
-  shift
-  (( $# >= 2 )) || { usage >&2; exit 2; }
-  engine="$1"
-  artifact="$2"
-  action="${3:-start}"
-  if (( $# >= 3 )); then
-    shift 3
-  else
-    shift 2
-  fi
-  [[ "$engine" == vllm || "$engine" == sglang ]] || fail "cluster engine must be 'vllm' or 'sglang'"
-  valid_artifact "$artifact" || fail "invalid artifact name '$artifact'"
+(( $# >= 3 )) || usage_error
+target="$1"
+engine="$2"
+artifact="$3"
+shift 3
+case "$target" in
+  local|spark1|spark2|spark3|cluster) ;;
+  *) usage_error ;;
+esac
+[[ "$engine" == vllm || "$engine" == sglang ]] || usage_error
+valid_artifact "$artifact" || fail "invalid artifact name '$artifact'"
+
+if [[ "$target" == cluster ]]; then
+  action="${1:-start}"
+  if (($#)); then shift; fi
   case "$action" in
     start|status|logs|verify|stop) ;;
     *) fail "invalid cluster action '$action'" ;;
   esac
   mapfile -d '' -t resolved < <(resolve_cluster_script "$engine" "$artifact" "$action")
   (( ${#resolved[@]} == 2 )) || exit 1
-  package="${resolved[0]}"
   script="${resolved[1]}"
   printf 'target=cluster engine=%s artifact=%s action=%s script=%s\n' "$engine" "$artifact" "$action" "$script" >&2
   exec "$script" "$@"
 fi
 
-engine=vllm
-if [[ "${1:-}" == vllm || "${1:-}" == sglang ]]; then
-  engine="$1"
-  shift
+require_controller_gpu
+if [[ "$target" == local ]]; then
+  mapfile -d '' -t resolved < <(resolve_single_script "$engine" rtx6000 "$artifact")
+  (( ${#resolved[@]} == 2 )) || exit 1
+  package="${resolved[0]}"
+  script="${resolved[1]}"
+  printf 'target=local profile=rtx6000 engine=%s artifact=%s script=%s\n' "$engine" "$artifact" "$script" >&2
+  exec "$ROOT/runtime/rtx6000/run_${engine}_docker.sh" "$package" "$@"
 fi
-(( $# >= 1 )) || { usage >&2; exit 2; }
-artifact="$1"
-shift
-valid_artifact "$artifact" || fail "invalid artifact name '$artifact'"
-profile="$(detect_profile)"
-mapfile -d '' -t resolved < <(resolve_single_script "$engine" "$profile" "$artifact")
+
+case "$target" in
+  spark1) host=spark1-ts ;;
+  spark2) host=spark2-ts ;;
+  spark3) host=spark3-ts ;;
+esac
+expected_commit="$(controller_commit)"
+mapfile -d '' -t resolved < <(resolve_single_script "$engine" spark "$artifact")
 (( ${#resolved[@]} == 2 )) || exit 1
-package="${resolved[0]}"
 script="${resolved[1]}"
-printf 'target=single profile=%s engine=%s artifact=%s script=%s\n' "$profile" "$engine" "$artifact" "$script" >&2
-exec "$ROOT/runtime/$profile/run_${engine}_docker.sh" "$package" "$@"
+printf 'target=%s host=%s profile=spark engine=%s artifact=%s script=%s\n' "$target" "$host" "$engine" "$artifact" "$script" >&2
+command=(env)
+for variable in "${single_control_environment[@]}" "${single_engine_environment[@]}"; do
+  [[ -v "$variable" ]] && command+=("$variable=${!variable}")
+done
+command+=(/home/jjlink/inference/runtime/spark/run-remote-single.sh "$expected_commit" "$engine" "$artifact" "$@")
+quoted=''
+for argument in "${command[@]}"; do
+  printf -v quoted '%s %q' "$quoted" "$argument"
+done
+exec ssh -o BatchMode=yes -o ConnectTimeout=20 -o ConnectionAttempts=3 "$host" "exec$quoted"
