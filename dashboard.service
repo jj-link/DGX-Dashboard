@@ -1,15 +1,16 @@
 [Unit]
-Description=DGX Spark Dashboard
+Description=DGX Dashboard Unified Control Plane
 After=network.target
 
 [Service]
 Type=simple
-User=workbench
 WorkingDirectory=/home/workbench/Projects/personal/dgx-dashboard
 ExecStart=/home/workbench/Projects/personal/dgx-dashboard/venv/bin/python /home/workbench/Projects/personal/dgx-dashboard/server.py
 Restart=on-failure
+UMask=0027
 RestartSec=5
 Environment=PATH=/home/workbench/.local/bin:/usr/bin:/bin
+EnvironmentFile=-/var/lib/dgx-dashboard/dashboard.env
 
 [Install]
-WantedBy=multi-user.target
+WantedBy=default.target
