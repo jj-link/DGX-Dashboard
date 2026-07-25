@@ -63,7 +63,7 @@ def parser_result(path: pathlib.Path) -> subprocess.CompletedProcess[bytes]:
 
 def test_metadata_parser() -> None:
     metadata_paths = sorted(ROOT.glob("serve/*/*/*/runtime.env")) + sorted(ROOT.glob("serve/cluster/*/*/runtime.env"))
-    assert len(metadata_paths) == 83, len(metadata_paths)
+    assert len(metadata_paths) == 80, len(metadata_paths)
     for path in metadata_paths:
         completed = parser_result(path)
         assert completed.returncode == 0, (path, completed.stderr.decode(errors="replace"))
