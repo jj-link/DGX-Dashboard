@@ -169,7 +169,7 @@ Mutation routes:
 - `POST /api/runs` — typed serving or benchmark request
 - `POST /api/runs/<uuid>/cancel`
 
-Run metadata never exposes credentials, PIDs, argv, or environments. Logs use capped byte-cursor reads. Metadata is persisted atomically; on restart, nonterminal runs become `interrupted`, exact labeled benchmark containers are removed, and unrelated containers are left untouched. Terminal history remains readable if a serving recipe is later removed from the active catalog; a nonterminal record for a retired recipe becomes `interrupted` without relaunching it.
+Run metadata never exposes credentials, PIDs, argv, or environments. Logs use capped byte-cursor reads. Metadata is persisted atomically; on restart, nonterminal serving runs are reconciled against exact service state, benchmark runs become `interrupted`, exact labeled benchmark containers are removed, and unrelated containers are left untouched. Terminal history remains readable if a serving recipe is later removed from the active catalog; a nonterminal record for a retired recipe becomes `interrupted` without relaunching it.
 
 Resource leases prevent overlapping mutations on the same target. `cluster` conflicts with individual `spark2` and `spark3` mutations. Only one benchmark worker may run at a time.
 
