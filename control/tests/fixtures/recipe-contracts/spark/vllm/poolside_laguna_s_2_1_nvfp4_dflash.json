@@ -49,7 +49,7 @@
     "TRANSFORMERS_OFFLINE=1",
     "--entrypoint",
     "/bin/bash",
-    "inference-workspace/vllm-poolside-spark:v0.25.2-flashinfer-20260712",
+    "inference-workspace/vllm-poolside-spark:v0.25.2-flashinfer-0.6.13",
     "/run/inference/package/serve.sh"
   ],
   "engine": "vllm",
@@ -96,7 +96,7 @@
     "DRAFTER": "poolside/Laguna-S-2.1-DFlash-NVFP4",
     "DRAFTER_HOST_PATH": "",
     "DRAFTER_REVISION": "723794750422b3efbf3a7b3af76dffb4ba035943",
-    "IMAGE": "inference-workspace/vllm-poolside-spark:v0.25.2-flashinfer-20260712",
+    "IMAGE": "inference-workspace/vllm-poolside-spark:v0.25.2-flashinfer-0.6.13",
     "MODEL": "poolside/Laguna-S-2.1-NVFP4",
     "MODEL_HOST_PATH": "",
     "MODEL_REVISION": "07614121b31898586430f189d27a25a0be310843",

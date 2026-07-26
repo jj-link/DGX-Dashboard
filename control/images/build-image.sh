@@ -27,7 +27,7 @@ case "$TARGET" in
   vllm-thinkingcap-spark) dockerfile=vllm-thinkingcap; tag=inference-workspace/vllm-thinkingcap-spark:v0.24.0-20260724; dependencies=(vllm-0.24-align-upstream vllm-0.24-dflash-depth-matrix) ;;
   vllm-dflash-rtx) dockerfile=vllm-dflash; tag=inference-workspace/vllm-dflash-rtx:v0.21.0-20260724 ;;
   vllm-spark) dockerfile=vllm-spark; tag=inference-workspace/vllm-spark:v0.21.0-20260724 ;;
-  vllm-poolside-spark) dockerfile=vllm-poolside-spark; tag=inference-workspace/vllm-poolside-spark:v0.25.2-flashinfer-20260712 ;;
+  vllm-poolside-spark) dockerfile=vllm-poolside-spark; tag=inference-workspace/vllm-poolside-spark:v0.25.2-flashinfer-0.6.13 ;;
   *) fail "unknown image target '$TARGET'" ;;
 esac
 if ((${#dependencies[@]})); then
