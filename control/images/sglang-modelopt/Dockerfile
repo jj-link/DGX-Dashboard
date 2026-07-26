@@ -6,5 +6,7 @@ RUN python3 -m pip install --no-cache-dir --upgrade --break-system-packages --no
     "flashinfer-cubin==0.6.13" \
     "flashinfer-jit-cache==0.6.13+cu130" \
     --extra-index-url https://flashinfer.ai/whl/cu130/
+RUN python3 -m pip install --no-cache-dir --upgrade --break-system-packages --no-deps \
+    "sglang-kernel==0.4.4"
 RUN python3 -m pip install --no-cache-dir --no-deps --force-reinstall \
     "sglang @ git+https://github.com/sgl-project/sglang.git@b34706ba8c8fe679888d8e9752c4faacbc80e444#subdirectory=python"
