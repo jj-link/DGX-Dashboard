@@ -12,7 +12,11 @@ import pytest
 from dgx_dashboard.control.catalog import ServeRecipe, ServingCatalog
 from dgx_dashboard.control.commands import CommandBuilder
 from dgx_dashboard.control.preflight import ControlPreflight, PreflightError
-from dgx_dashboard.control.requests import RequestValidationError, validate_operation
+from dgx_dashboard.control.requests import (
+    RequestValidationError,
+    validate_operation,
+    validate_persisted_operation,
+)
 
 
 _METADATA_KEYS = (
@@ -190,6 +194,27 @@ def test_request_validation_rejects_bool_numeric_and_arbitrary_surface(tmp_path)
         validate_operation({**base, "options": {"out_dir": "/tmp"}}, catalog)
     with pytest.raises(RequestValidationError, match="invalid filter"):
         validate_operation({**base, "options": {"keywords": ["x,y"]}}, catalog)
+
+
+def test_persisted_requests_allow_only_well_formed_retired_recipes(tmp_path):
+    catalog = _RequestCatalog(tmp_path)
+    request = {
+        "kind": "serving",
+        "action": "start",
+        "target": "local",
+        "engine": "vllm",
+        "artifact": "retired_recipe",
+    }
+    with pytest.raises(RequestValidationError, match="unknown serving recipe"):
+        validate_operation(request, catalog)
+
+    persisted = validate_persisted_operation(request, catalog)
+    assert persisted.public == request
+    assert persisted.recipe is None
+    assert persisted.resources == frozenset({"target:local"})
+
+    with pytest.raises(RequestValidationError, match="artifact must be a recipe name"):
+        validate_persisted_operation({**request, "artifact": "../escape"}, catalog)
 
 
 class _PreflightCatalog:

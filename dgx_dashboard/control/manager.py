@@ -18,7 +18,11 @@ from typing import Any, BinaryIO, Callable, Mapping
 
 from dgx_dashboard.control.catalog import ServingCatalog
 from dgx_dashboard.control.commands import CommandBuilder, CommandSpec, OperationPlan
-from dgx_dashboard.control.requests import OperationRequest, RequestValidationError, validate_operation
+from dgx_dashboard.control.requests import (
+    OperationRequest,
+    RequestValidationError,
+    validate_persisted_operation,
+)
 
 
 RUN_STATES = frozenset(
@@ -507,7 +511,7 @@ class RunManager:
         if record.get("schema") != 1 or record.get("id") != run_id or record.get("state") not in RUN_STATES:
             raise PersistenceFailure("durable run metadata has an invalid identity or state")
         try:
-            operation = validate_operation(record.get("request"), self.catalog)
+            operation = validate_persisted_operation(record.get("request"), self.catalog)
         except RequestValidationError as error:
             raise PersistenceFailure("durable run metadata contains an invalid request") from error
         if record.get("kind") != operation.kind or record.get("resources") != sorted(operation.resources):
@@ -531,7 +535,7 @@ class RunManager:
             record = self._records[run_id]
             if record["state"] in TERMINAL_STATES:
                 continue
-            operation = validate_operation(record["request"], self.catalog)
+            operation = validate_persisted_operation(record["request"], self.catalog)
             new_state = "interrupted"
             if operation.kind == "serving" and operation.recipe is not None:
                 if operation.action in {"start", "verify"}:

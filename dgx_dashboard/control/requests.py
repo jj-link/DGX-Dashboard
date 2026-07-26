@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass
 from typing import Any, Mapping
 
@@ -10,6 +11,7 @@ from dgx_dashboard.control.catalog import ServeRecipe, ServingCatalog
 
 _LANGUAGES = {"cpp", "go", "java", "javascript", "python", "rust"}
 _SERVING_ACTIONS = {"start", "stop", "verify"}
+_ARTIFACT_RE = re.compile(r"[a-z0-9][a-z0-9_]*\Z")
 _BENCHMARK_OPTION_KEYS = {
     "lang",
     "num_tests",
@@ -94,7 +96,19 @@ def validate_operation(payload: Any, catalog: ServingCatalog) -> OperationReques
     raise RequestValidationError("kind must be 'serving' or 'benchmark'")
 
 
-def _validate_serving(payload: dict[str, Any], catalog: ServingCatalog) -> OperationRequest:
+def validate_persisted_operation(payload: Any, catalog: ServingCatalog) -> OperationRequest:
+    """Validate durable history while allowing a removed serving recipe."""
+    if isinstance(payload, dict) and payload.get("kind") == "serving":
+        return _validate_serving(payload, catalog, allow_unknown_recipe=True)
+    return validate_operation(payload, catalog)
+
+
+def _validate_serving(
+    payload: dict[str, Any],
+    catalog: ServingCatalog,
+    *,
+    allow_unknown_recipe: bool = False,
+) -> OperationRequest:
     _exact_keys(payload, {"kind", "action", "target", "engine", "artifact"}, "serving request")
     action = payload["action"]
     if not isinstance(action, str) or action not in _SERVING_ACTIONS:
@@ -104,12 +118,14 @@ def _validate_serving(payload: dict[str, Any], catalog: ServingCatalog) -> Opera
     artifact = payload["artifact"]
     if not isinstance(engine, str) or engine not in {"vllm", "sglang"}:
         raise RequestValidationError("engine must be vllm or sglang")
-    if not isinstance(artifact, str):
+    if not isinstance(artifact, str) or _ARTIFACT_RE.fullmatch(artifact) is None:
         raise RequestValidationError("artifact must be a recipe name")
     try:
         recipe = catalog.get(target, engine, artifact)
     except KeyError as error:
-        raise UnknownRecipeError("unknown serving recipe") from error
+        if not allow_unknown_recipe:
+            raise UnknownRecipeError("unknown serving recipe") from error
+        recipe = None
     public = {
         "kind": "serving",
         "action": action,

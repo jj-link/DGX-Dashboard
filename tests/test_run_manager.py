@@ -342,3 +342,49 @@ def test_restart_reconciles_benchmark_and_removes_only_labeled_containers(tmp_pa
     assert manager.reconciliation == [{"id": run_id, "state": "interrupted"}]
     assert cleanup.calls[0][-1] == f"label=io.dgx-dashboard.run-id={run_id}"
     assert cleanup.calls[1][:4] == ("docker", "container", "rm", "--force")
+
+
+def test_restart_preserves_retired_recipe_history_without_relaunching(tmp_path):
+    root, state, commands, catalog = _make_builder(tmp_path)
+    marker = tmp_path / "serve-called"
+    _write_script(root / "serve.sh", f"touch {marker}\n")
+    _write_script(root / "benchmark.sh", "exit 0\n")
+    state.mkdir()
+
+    def write_record(run_state: str, created_at: str) -> str:
+        run_id = str(uuid.uuid4())
+        run_dir = state / run_id
+        run_dir.mkdir(mode=0o700)
+        (run_dir / "output.log").write_bytes(b"historical output\n")
+        terminal = run_state == "cleanup_failed"
+        record = {
+            "schema": 1,
+            "id": run_id,
+            "kind": "serving",
+            "state": run_state,
+            "request": {
+                "kind": "serving",
+                "action": "start",
+                "target": "local",
+                "engine": "vllm",
+                "artifact": "retired_recipe",
+            },
+            "resources": ["target:local"],
+            "created_at": created_at,
+            "started_at": created_at,
+            "finished_at": created_at if terminal else None,
+            "exit_code": 255 if terminal else None,
+            "error_code": "cleanup_failed" if terminal else None,
+            "results": [],
+        }
+        (run_dir / "meta.json").write_text(json.dumps(record), encoding="utf-8")
+        return run_id
+
+    terminal_id = write_record("cleanup_failed", "2026-07-25T12:00:00+00:00")
+    running_id = write_record("running", "2026-07-25T12:01:00+00:00")
+    manager = RunManager(state, catalog, commands, retention=20)
+
+    assert manager.get(terminal_id)["state"] == "cleanup_failed"
+    assert manager.get(running_id)["state"] == "interrupted"
+    assert manager.reconciliation == [{"id": running_id, "state": "interrupted"}]
+    assert not marker.exists()
