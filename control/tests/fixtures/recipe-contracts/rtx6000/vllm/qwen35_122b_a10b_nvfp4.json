@@ -107,7 +107,7 @@
     "MODEL_REVISION": "49d19c108259a21450c40b8af38828b0a97390d8",
     "SERVED": "Qwen3.5-122B-A10B",
     "TOKENIZER": "/models/local/tok-qwen35-122b",
-    "TOKENIZER_HOST_PATH": "/home/workbench/inference/tok-qwen35-122b",
+    "TOKENIZER_HOST_PATH": "/var/lib/dgx-dashboard/runtime-assets/tokenizers/qwen35-122b",
     "TOKENIZER_REVISION": ""
   },
   "profile": "rtx6000"
