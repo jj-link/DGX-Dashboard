@@ -2,9 +2,9 @@ ARG BASE_IMAGE=lmsysorg/sglang@sha256:42194170546745092e74cd5f81ad32a7c6e944c711
 FROM ${BASE_IMAGE}
 ENV FLASHINFER_DISABLE_VERSION_CHECK=1
 RUN python3 -m pip install --no-cache-dir --upgrade --break-system-packages \
-    "flashinfer-python==0.6.15.dev20260712" \
-    "flashinfer-cubin==0.6.15.dev20260712" \
-    "flashinfer-jit-cache==0.6.15.dev20260712" \
-    --extra-index-url https://flashinfer.ai/whl/nightly/cu130/
+    "flashinfer-python==0.6.13" \
+    "flashinfer-cubin==0.6.13" \
+    "flashinfer-jit-cache==0.6.13+cu130" \
+    --extra-index-url https://flashinfer.ai/whl/cu130/
 RUN python3 -m pip install --no-cache-dir --no-deps --force-reinstall \
     "sglang @ git+https://github.com/sgl-project/sglang.git@b34706ba8c8fe679888d8e9752c4faacbc80e444#subdirectory=python"
