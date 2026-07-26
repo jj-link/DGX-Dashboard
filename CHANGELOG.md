@@ -10,4 +10,5 @@
 - Fix: preserve API responsiveness during long serving verification and prevent overlapping live-stat polling.
 - Fix: reject incomplete Hugging Face model and drafter snapshots before single-node or cluster launch.
 - Fix: preserve durable run history when a serving recipe leaves the active catalog, without allowing that retired recipe to launch.
+- Fix: keep the last successful serving recipe visible after a failed start, reject occupied target ports before Docker creation, and guide operators to stop the active recipe first.
 - Change: verify start, model response, stop, and cleanup through the canonical repository on `local`, all three Spark nodes, and the Spark 2 + Spark 3 cluster.
