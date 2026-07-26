@@ -203,8 +203,8 @@ curl --fail http://<target-endpoint>/v1/models
 
 For a serving cutover, capture a deterministic chat response before stop, start the same recipe from this repository, repeat the same request, and compare model, content, and finish reason.
 
-## Rollback and archive policy
+## Rollback backup policy
 
-The retired `inference` checkout is an archive only, not an active caller. Its Git history remains reachable from this repository through the imported source-history merge. Runtime results and corpus data stay under `/var/lib/dgx-dashboard`; archive symlinks expose those same trees to old read-only tools without copying them.
+The original `inference` checkout is retained unchanged as a temporary rollback backup during cutover, not as a permanent archive. This migration does not archive its GitHub repository. Its Git history also remains reachable from this repository through the imported source-history merge. Runtime results and corpus data stay under `/var/lib/dgx-dashboard`; rollback symlinks expose those same trees to old tools without copying them.
 
-Do not delete the archive checkout, Spark 1 legacy-dashboard backup, migration manifests, or rollback links until lifecycle checks, result manifests, repository audits, and operator approval all pass.
+Do not delete or modify the backup checkout, Spark 1 legacy-dashboard backup, migration manifests, or rollback links while migration verification is in progress. After every lifecycle, data-integrity, repository-audit, and operator gate passes, remove them only with explicit operator approval.
