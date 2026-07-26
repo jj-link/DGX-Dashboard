@@ -42,12 +42,17 @@ venv/bin/pip install -r requirements.txt
 
 ## Configuration and authentication
 
-Create a production config outside Git, using `config.ini` as the schema. Set the canonical wrapper and state roots, the exact allowed browser origin, all enabled targets, and then enable controls:
+Create a production config outside Git, using `config.ini` as the schema. Bind Waitress to WSL loopback, set the canonical wrapper and state roots, set the exact Windows Tailscale Serve origin, enable every target, and then enable controls:
 
 ```ini
+[server]
+host = 127.0.0.1
+port = 9000
+refresh_interval = 3
+
 [control]
 enabled = true
-allowed_origin = http://100.74.194.53:9000
+allowed_origin = https://jjlink-pc-1.tail90c6fe.ts.net:8443
 wrapper_root = /home/workbench/Projects/personal/dgx-dashboard
 state_dir = /var/lib/dgx-dashboard/runs
 polyglot_root = /var/lib/dgx-dashboard/polyglot-benchmark
@@ -66,7 +71,14 @@ install -m 0600 /dev/null /var/lib/dgx-dashboard/dashboard.env
 
 A control-enabled startup fails closed if auth, origin, Docker, GPU, SSH, Git cleanliness, state roots, result roots, corpus, or recipe validation fails. Mutation requests additionally require Basic auth, `Content-Type: application/json`, the configured same-origin `Origin`, and a body no larger than 16 KiB. No permissive CORS headers are emitted.
 
-Docker-group membership is effectively host-root capability. Keep the dashboard bound to a private Tailscale address or place it behind an authenticated TLS reverse proxy.
+Docker-group membership is effectively host-root capability. Keep Waitress bound to WSL loopback and expose it only through the Windows Tailscale HTTPS proxy. In Windows PowerShell:
+
+```powershell
+tailscale serve --bg --https=8443 --yes http://127.0.0.1:9000
+tailscale serve status
+```
+
+This publishes the dashboard only inside the tailnet at `https://jjlink-pc-1.tail90c6fe.ts.net:8443/`. Local Windows access and remote tailnet access use the same authenticated HTTPS origin.
 
 ## System service
 
@@ -83,12 +95,12 @@ Smoke checks:
 
 ```bash
 curl -u "$DASHBOARD_AUTH_USER:$DASHBOARD_AUTH_PASSWORD" \
-  http://100.74.194.53:9000/api/control/catalog
+  https://jjlink-pc-1.tail90c6fe.ts.net:8443/api/control/catalog
 curl -u "$DASHBOARD_AUTH_USER:$DASHBOARD_AUTH_PASSWORD" \
-  http://100.74.194.53:9000/api/stats
+  https://jjlink-pc-1.tail90c6fe.ts.net:8443/api/stats
 ```
 
-Open `http://100.74.194.53:9000` and authenticate. The **Live** tab monitors GPUs and inference endpoints, **Benchmarks** browses indexed results, and **Control** exposes typed operations, bounded logs, history, cancellation, and result links.
+Open `https://jjlink-pc-1.tail90c6fe.ts.net:8443/` and authenticate. The **Live** tab monitors GPUs and inference endpoints, **Benchmarks** browses indexed results, and **Control** exposes typed operations, bounded logs, history, cancellation, and result links.
 
 ## Model lifecycle CLI
 
