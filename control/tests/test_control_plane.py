@@ -6,6 +6,7 @@ import json
 import importlib.util
 import http.server
 import os
+import socket
 import pathlib
 import shlex
 import subprocess
@@ -748,6 +749,23 @@ raise SystemExit(90)
         )
         assert rejected.returncode == 1
         assert "replacement container 'old-production' image is" in rejected.stderr
+        assert not marker.exists()
+
+        occupied = dict(environment)
+        occupied.pop("PREFLIGHT_REPLACE_CONTAINER")
+        occupied.pop("PREFLIGHT_REPLACE_IMAGE_ID")
+        occupied["PREFLIGHT_ONLY"] = "0"
+        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as listener:
+            listener.bind(("127.0.0.1", 0))
+            host, port = listener.getsockname()
+            occupied["HOST_PORT"] = str(port)
+            rejected = run(
+                [str(ROOT / "runtime" / "rtx6000" / "run_vllm_docker.sh"), str(package)],
+                occupied,
+            )
+        assert rejected.returncode == 1
+        assert f"port {host}:{port} is unavailable" in rejected.stderr
+        assert "stop the active service before starting another" in rejected.stderr
         assert not marker.exists()
 
 

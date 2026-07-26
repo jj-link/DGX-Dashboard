@@ -299,7 +299,9 @@ PY
 
 verify_port_available() {
   python3 - "$BIND_ADDRESS" "$HOST_PORT" <<'PY'
+import json
 import socket
+import subprocess
 import sys
 
 host, port = sys.argv[1], int(sys.argv[2])
@@ -307,7 +309,25 @@ with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as listener:
     try:
         listener.bind((host, port))
     except OSError as error:
-        raise SystemExit(f"port {host}:{port} is unavailable: {error}")
+        occupant = ""
+        completed = subprocess.run(
+            ["docker", "container", "ls", "--format", "{{json .}}"],
+            text=True,
+            capture_output=True,
+        )
+        if completed.returncode == 0:
+            for line in completed.stdout.splitlines():
+                try:
+                    row = json.loads(line)
+                except json.JSONDecodeError:
+                    continue
+                if f"{host}:{port}->" in row.get("Ports", ""):
+                    occupant = f" by Docker container {row.get('Names', 'unknown')!r}"
+                    break
+        raise SystemExit(
+            f"port {host}:{port} is unavailable{occupant}: {error}; "
+            "stop the active service before starting another"
+        )
 PY
 }
 
@@ -338,4 +358,5 @@ if [[ "$PREFLIGHT_ONLY" == 1 ]]; then
   printf 'preflight complete; no container created\n'
   exit 0
 fi
+verify_port_available
 exec docker "${container_args[@]}"

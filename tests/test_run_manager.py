@@ -263,6 +263,49 @@ def test_serving_start_runs_exact_verify_followup(tmp_path):
     assert "action=verify target=local artifact=recipe_local" in output
 
 
+def test_failed_start_does_not_hide_last_successful_serving_recipe(tmp_path):
+    root, state, commands, catalog = _make_builder(tmp_path)
+    _write_script(
+        root / "serve.sh",
+        "action=${4:-start}\n"
+        "if [[ $action == start && $3 == recipe_conflict ]]; then exit 125; fi\n"
+        "if [[ $action == status ]]; then printf 'container=x state=absent\\n'; fi\n",
+    )
+    _write_script(root / "benchmark.sh", "exit 0\n")
+    manager = RunManager(state, catalog, commands, retention=20)
+
+    active = manager.submit(_serving_operation(catalog, "local"))
+    assert _wait_terminal(manager, active["id"])["state"] == "succeeded"
+
+    conflict_recipe = ServeRecipe(
+        target="local",
+        engine="vllm",
+        artifact="recipe_conflict",
+        profile="rtx6000",
+        served="served-conflict",
+        container_name="container-conflict",
+        package=root,
+    )
+    conflict_request = {
+        "kind": "serving",
+        "action": "start",
+        "target": "local",
+        "engine": conflict_recipe.engine,
+        "artifact": conflict_recipe.artifact,
+    }
+    conflict = manager.submit(
+        OperationRequest(
+            kind="serving",
+            target="local",
+            resources=frozenset({"target:local"}),
+            public=conflict_request,
+            recipe=conflict_recipe,
+            action="start",
+        )
+    )
+    assert _wait_terminal(manager, conflict["id"])["state"] == "failed"
+    assert manager.latest_serving_recipes() == {"local": ("vllm", "recipe_local")}
+
 
 def test_serving_verification_does_not_block_run_reads(tmp_path):
     root, state, commands, catalog = _make_builder(tmp_path)

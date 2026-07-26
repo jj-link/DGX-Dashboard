@@ -17,6 +17,7 @@
   let runs = [];
   let statusTimer = null;
   let runTimer = null;
+  let servingSelectionInitialized = false;
   let selectedRunId = null;
   let selectedRunOffset = 0;
   let selectedRunTerminal = false;
@@ -115,16 +116,31 @@
     return catalog.recipes.filter(recipe => recipe.target === target && (!engine || recipe.engine === engine));
   }
 
-  function syncServingSelectors() {
+  function runningRecipe(target) {
+    const status = statuses.get(target);
+    return status?.state === 'running' ? status : null;
+  }
+
+  function matchesRunningRecipe(recipe, running) {
+    return !running || (
+      recipe?.target === running.target
+      && recipe?.engine === running.engine
+      && recipe?.artifact === running.artifact
+    );
+  }
+
+  function syncServingSelectors(preferRunning = false) {
     if (!catalog?.enabled) return;
     const target = byId('serve-target').value || catalog.targets[0];
+    const running = preferRunning ? runningRecipe(target) : null;
     const available = recipesFor(target);
     const engines = [...new Set(available.map(recipe => recipe.engine))];
     const previousEngine = byId('serve-engine').value;
     byId('serve-engine').innerHTML = engines
       .map(engine => `<option value="${escapeHtml(engine)}">${escapeHtml(engine.toUpperCase())}</option>`)
       .join('');
-    if (engines.includes(previousEngine)) byId('serve-engine').value = previousEngine;
+    if (running && engines.includes(running.engine)) byId('serve-engine').value = running.engine;
+    else if (engines.includes(previousEngine)) byId('serve-engine').value = previousEngine;
 
     const engine = byId('serve-engine').value;
     const recipes = recipesFor(target, engine);
@@ -132,7 +148,11 @@
     byId('serve-artifact').innerHTML = recipes
       .map(recipe => `<option value="${escapeHtml(recipe.artifact)}">${escapeHtml(recipe.artifact)}</option>`)
       .join('');
-    if (recipes.some(recipe => recipe.artifact === previousArtifact)) byId('serve-artifact').value = previousArtifact;
+    if (running && recipes.some(recipe => recipe.artifact === running.artifact)) {
+      byId('serve-artifact').value = running.artifact;
+    } else if (recipes.some(recipe => recipe.artifact === previousArtifact)) {
+      byId('serve-artifact').value = previousArtifact;
+    }
     updateRecipeReadout();
   }
 
@@ -147,9 +167,15 @@
   function updateRecipeReadout() {
     const recipe = selectedRecipe();
     const state = statuses.get(recipe?.target);
+    const running = runningRecipe(recipe?.target);
     if (!recipe) {
       byId('serve-recipe-meta').textContent = 'No recipe is available for this target and engine.';
       byId('serve-selection-state').textContent = 'NO RECIPE';
+      return;
+    }
+    if (running && !matchesRunningRecipe(recipe, running)) {
+      byId('serve-recipe-meta').textContent = `${targetLabel(recipe.target)} is occupied by ${running.served} · active recipe ${running.engine}/${running.artifact}. Select and stop the active recipe before starting another.`;
+      byId('serve-selection-state').textContent = 'OCCUPIED';
       return;
     }
     byId('serve-recipe-meta').textContent = `${recipe.served} · ${recipe.profile} profile · exact artifact ${recipe.artifact}`;
@@ -162,7 +188,12 @@
       const payload = await jsonRequest('/api/serving');
       statuses = new Map((payload.targets || []).map(item => [item.target, item]));
       renderTargets(false);
-      updateRecipeReadout();
+      if (!servingSelectionInitialized) {
+        syncServingSelectors(true);
+        servingSelectionInitialized = true;
+      } else {
+        updateRecipeReadout();
+      }
     } catch (error) {
       renderTargets(true, error.message);
     }
@@ -190,6 +221,14 @@
   async function submitServing(action) {
     const recipe = selectedRecipe();
     if (!recipe) return;
+    const running = runningRecipe(recipe.target);
+    if (running && !matchesRunningRecipe(recipe, running)) {
+      const instruction = action === 'start'
+        ? 'Stop that active recipe before starting another.'
+        : 'Select the active recipe before operating it.';
+      showOperationError(new Error(`${targetLabel(recipe.target)} is running ${running.served} (${running.engine}/${running.artifact}). ${instruction}`));
+      return;
+    }
     if (action === 'stop' && !window.confirm(`Stop ${recipe.served} on ${targetLabel(recipe.target)}?`)) return;
     setActionBusy(true);
     try {
@@ -418,8 +457,8 @@
     });
   });
 
-  byId('serve-target').addEventListener('change', syncServingSelectors);
-  byId('serve-engine').addEventListener('change', syncServingSelectors);
+  byId('serve-target').addEventListener('change', () => syncServingSelectors(true));
+  byId('serve-engine').addEventListener('change', () => syncServingSelectors(false));
   byId('serve-artifact').addEventListener('change', updateRecipeReadout);
   document.querySelectorAll('[data-serve-action]').forEach(button => {
     button.addEventListener('click', () => submitServing(button.dataset.serveAction));

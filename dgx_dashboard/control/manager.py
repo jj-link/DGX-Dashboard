@@ -298,9 +298,14 @@ class RunManager:
             latest: dict[str, tuple[str, str]] = {}
             for record in records:
                 request = record["request"]
-                if record["kind"] != "serving" or request["target"] in latest:
+                target = request["target"]
+                if (
+                    record["kind"] != "serving"
+                    or record["state"] != "succeeded"
+                    or target in latest
+                ):
                     continue
-                latest[request["target"]] = (request["engine"], request["artifact"])
+                latest[target] = (request["engine"], request["artifact"])
             return latest
 
     def _watch(self, run_id: str) -> None:
