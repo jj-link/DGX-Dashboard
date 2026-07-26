@@ -118,6 +118,8 @@ Single-device services bind the workstation model to loopback and Spark models t
 
 Starts never replace an occupied target implicitly. Stop the current exact recipe first. Container, image, network, port, model, and recipe identity checks fail closed rather than touching an unknown service.
 
+Before a cached repository is mounted, the launcher rejects broken snapshot symlinks and files missing from a Hugging Face weight index. An interrupted download cannot be treated as an installed model or drafter on either single-node or cluster paths.
+
 ## Oneshot benchmark CLI
 
 Benchmarks always run on the workstation against the model already serving on the selected target:
@@ -167,7 +169,7 @@ Mutation routes:
 - `POST /api/runs` — typed serving or benchmark request
 - `POST /api/runs/<uuid>/cancel`
 
-Run metadata never exposes credentials, PIDs, argv, or environments. Logs use capped byte-cursor reads. Metadata is persisted atomically; on restart, nonterminal runs become `interrupted`, exact labeled benchmark containers are removed, and unrelated containers are left untouched.
+Run metadata never exposes credentials, PIDs, argv, or environments. Logs use capped byte-cursor reads. Metadata is persisted atomically; on restart, nonterminal runs become `interrupted`, exact labeled benchmark containers are removed, and unrelated containers are left untouched. Terminal history remains readable if a serving recipe is later removed from the active catalog; a nonterminal record for a retired recipe becomes `interrupted` without relaunching it.
 
 Resource leases prevent overlapping mutations on the same target. `cluster` conflicts with individual `spark2` and `spark3` mutations. Only one benchmark worker may run at a time.
 
@@ -205,6 +207,6 @@ For a serving cutover, capture a deterministic chat response before stop, start 
 
 ## Rollback backup policy
 
-The original `inference` checkout is retained unchanged as a temporary rollback backup during cutover, not as a permanent archive. This migration does not archive its GitHub repository. Its Git history also remains reachable from this repository through the imported source-history merge. Runtime results and corpus data stay under `/var/lib/dgx-dashboard`; rollback symlinks expose those same trees to old tools without copying them.
+The original `inference` checkout is retained unchanged as a rollback backup, not as an active source or runtime caller. This migration does not archive its GitHub repository. Its Git history remains reachable from this repository through the imported source-history merge. Runtime results and corpus data stay under `/var/lib/dgx-dashboard`; rollback symlinks expose those same trees to old tools without copying them.
 
-Do not delete or modify the backup checkout, Spark 1 legacy-dashboard backup, migration manifests, or rollback links while migration verification is in progress. After every lifecycle, data-integrity, repository-audit, and operator gate passes, remove them only with explicit operator approval.
+Passing cutover checks does not authorize deletion. Do not delete or modify the backup checkout, Spark 1 legacy-dashboard backup, migration manifests, or rollback links unless the operator explicitly approves a separate removal action.
