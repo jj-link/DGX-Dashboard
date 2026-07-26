@@ -19,8 +19,6 @@ args=(
   '{"enable_thinking":true}'
   --override-generation-config
   '{"temperature":0.7,"top_p":0.95}'
-  --attention-backend
-  TRITON_ATTN
   --moe-backend
   cutlass
   --max-num-seqs
