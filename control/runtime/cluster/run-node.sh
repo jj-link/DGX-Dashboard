@@ -30,6 +30,7 @@ REPO_ROOT="${DGX_DASHBOARD_ROOT:-/home/jjlink/dgx-dashboard}"
 CONTROL_ROOT="$REPO_ROOT/control"
 PACKAGE="$CONTROL_ROOT/serve/cluster/$ENGINE/$ARTIFACT"
 PARSER="$CONTROL_ROOT/tools/parse-runtime-env.py"
+VALIDATOR="$CONTROL_ROOT/tools/validate-hf-snapshot.py"
 [[ -f "$PACKAGE/runtime.env" ]] || fail "missing cluster metadata '$PACKAGE/runtime.env'"
 [[ -x "$PARSER" ]] || fail "missing metadata parser '$PARSER'"
 
@@ -81,7 +82,8 @@ repo_directory() {
 
 resolve_repository() {
   local label="$1" repository="$2" revision="$3" variable_prefix="$4"
-  local repository_directory candidate root resolved_host='' resolved_container=''
+  local repository_directory candidate root snapshot
+  local resolved_host='' resolved_container='' validation_error='' validation_output
   repository_directory="$(repo_directory "$repository")"
   local -a roots=()
   if [[ -n "${HF_CACHE:-}" ]]; then
@@ -91,14 +93,24 @@ resolve_repository() {
   fi
   for root in "${roots[@]}"; do
     for candidate in "$root/hub/$repository_directory" "$root/$repository_directory"; do
-      if [[ -d "$candidate/snapshots/$revision" ]]; then
-        resolved_host="$(cd "$candidate" && pwd -P)"
-        resolved_container="/models/hub/$repository_directory"
-        break 2
+      snapshot="$candidate/snapshots/$revision"
+      if [[ -d "$snapshot" ]]; then
+        if validation_output="$(python3 "$VALIDATOR" "$snapshot" 2>&1)"; then
+          resolved_host="$(cd "$candidate" && pwd -P)"
+          resolved_container="/models/hub/$repository_directory"
+          break 2
+        elif [[ -z "$validation_error" ]]; then
+          validation_error="${validation_output#error: }"
+        fi
       fi
     done
   done
-  [[ -n "$resolved_host" ]] || fail "$label '$repository@$revision' is not installed in any configured cache root"
+  if [[ -z "$resolved_host" ]]; then
+    if [[ -n "$validation_error" ]]; then
+      fail "$label '$repository@$revision' has an incomplete cache snapshot: $validation_error"
+    fi
+    fail "$label '$repository@$revision' is not installed in any configured cache root"
+  fi
   printf -v "${variable_prefix}_REPO_HOST" '%s' "$resolved_host"
   printf -v "${variable_prefix}_REPO_CONTAINER" '%s' "$resolved_container"
   printf -v "${variable_prefix}_PATH" '%s' "$resolved_container/snapshots/$revision"

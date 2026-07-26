@@ -305,6 +305,36 @@ def test_node_preflight_and_launch() -> None:
                 assert "MODEL_REPO_HOST=" in completed.stdout
                 if rank == "0":
                     assert "API_HOST=100.64.0.8" in completed.stdout
+        cluster_metadata = assignments(
+            packages[("sglang", "unsloth_qwen36_27b_nvfp4_dflash_tp2")] / "runtime.env",
+        )
+        snapshot = (
+            cache
+            / "hub"
+            / f"models--{cluster_metadata['MODEL'].replace('/', '--')}"
+            / "snapshots"
+            / cluster_metadata["MODEL_REVISION"]
+        )
+        missing_name = "model-00001-of-00002.safetensors"
+        (snapshot / "model.safetensors.index.json").write_text(
+            json.dumps({"weight_map": {"layer.0": missing_name}}),
+            encoding="utf-8",
+        )
+        incomplete = run(
+            [
+                str(NODE),
+                "preflight",
+                "sglang",
+                "unsloth_qwen36_27b_nvfp4_dflash_tp2",
+                "0",
+            ],
+            environment,
+        )
+        assert incomplete.returncode == 1
+        assert "has an incomplete cache snapshot" in incomplete.stderr
+        assert f"references missing weight file '{missing_name}'" in incomplete.stderr
+        (snapshot / missing_name).touch()
+
 
         old_image = "sha256:" + "2" * 64
         replacement_environment = dict(environment)
