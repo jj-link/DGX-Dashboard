@@ -631,6 +631,50 @@ def test_resolver_failures() -> None:
         assert expected in completed.stderr
 
 
+def test_snapshot_integrity() -> None:
+    with tempfile.TemporaryDirectory() as temporary:
+        temp = pathlib.Path(temporary)
+        values = valid_values()
+        package = make_test_package(temp, values)
+        cache = temp / "cache"
+        make_cache(cache, values["MODEL"], values["MODEL_REVISION"])
+        snapshot = (
+            cache
+            / "hub"
+            / "models--owner--model"
+            / "snapshots"
+            / values["MODEL_REVISION"]
+        )
+        index = snapshot / "model.safetensors.index.json"
+        missing_name = "model-00001-of-00002.safetensors"
+        present_name = "model-00002-of-00002.safetensors"
+        index.write_text(
+            json.dumps({
+                "weight_map": {
+                    "layer.0": missing_name,
+                    "layer.1": present_name,
+                },
+            }),
+            encoding="utf-8",
+        )
+        (snapshot / present_name).touch()
+
+        incomplete = resolver_run(package, cache, temp / "home")
+        assert incomplete.returncode == 1
+        assert "has an incomplete cache snapshot" in incomplete.stderr
+        assert f"references missing weight file '{missing_name}'" in incomplete.stderr
+
+        (snapshot / missing_name).touch()
+        complete = resolver_run(package, cache, temp / "home")
+        assert complete.returncode == 0, complete.stderr
+
+        broken = snapshot / "optional-config.json"
+        broken.symlink_to("../../blobs/missing")
+        rejected = resolver_run(package, cache, temp / "home")
+        assert rejected.returncode == 1
+        assert "snapshot entry 'optional-config.json' is a broken symlink" in rejected.stderr
+
+
 def test_single_preflight() -> None:
     with tempfile.TemporaryDirectory() as temporary:
         temp = pathlib.Path(temporary)
@@ -968,6 +1012,7 @@ def main() -> int:
     if arguments.group in {"all", "runtime"}:
         test_metadata_parser()
         test_resolver_failures()
+        test_snapshot_integrity()
         test_single_preflight()
         test_single_lifecycle()
         test_remote_single_validation()

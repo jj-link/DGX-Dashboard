@@ -18,6 +18,7 @@ EXTRA_ARGS=("$@")
 PACKAGE="$(cd "$PACKAGE" && pwd -P)"
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd -P)"
 PARSER="$ROOT/tools/parse-runtime-env.py"
+VALIDATOR="$ROOT/tools/validate-hf-snapshot.py"
 # shellcheck source=single-environment.sh
 source "$ROOT/runtime/single-environment.sh"
 
@@ -153,6 +154,7 @@ resolve_artifact() {
   local host_path="$4"
   local lower_label="${label,,}"
   local repository_directory repository_path snapshot_path resolved_path
+  local candidate validation_error validation_output
 
   if [[ -z "$value" ]]; then
     printf -v "${label}_PATH" '%s' ''
@@ -171,23 +173,40 @@ resolve_artifact() {
 
   repository_directory="$(repo_directory "$value")"
   repository_path=''
+  validation_error=''
   while IFS= read -r candidate; do
-    if [[ -d "$candidate/snapshots/$revision" ]]; then
-      repository_path="$candidate"
-      break
+    snapshot_path="$candidate/snapshots/$revision"
+    if [[ -d "$snapshot_path" ]]; then
+      if validation_output="$(python3 "$VALIDATOR" "$snapshot_path" 2>&1)"; then
+        repository_path="$candidate"
+        break
+      elif [[ -z "$validation_error" ]]; then
+        validation_error="${validation_output#error: }"
+      fi
     fi
   done < <(candidate_repositories "$repository_directory")
 
   if [[ -z "$repository_path" ]]; then
     download_repository "$value" "$revision" || true
+    validation_error=''
     while IFS= read -r candidate; do
-      if [[ -d "$candidate/snapshots/$revision" ]]; then
-        repository_path="$candidate"
-        break
+      snapshot_path="$candidate/snapshots/$revision"
+      if [[ -d "$snapshot_path" ]]; then
+        if validation_output="$(python3 "$VALIDATOR" "$snapshot_path" 2>&1)"; then
+          repository_path="$candidate"
+          break
+        elif [[ -z "$validation_error" ]]; then
+          validation_error="${validation_output#error: }"
+        fi
       fi
     done < <(candidate_repositories "$repository_directory")
   fi
-  [[ -n "$repository_path" ]] || fail "$lower_label '$value@$revision' is not installed in any configured cache root"
+  if [[ -z "$repository_path" ]]; then
+    if [[ -n "$validation_error" ]]; then
+      fail "$lower_label '$value@$revision' has an incomplete cache snapshot: $validation_error"
+    fi
+    fail "$lower_label '$value@$revision' is not installed in any configured cache root"
+  fi
 
   repository_path="$(realpath -e "$repository_path")"
   snapshot_path="/models/hub/$repository_directory/snapshots/$revision"
