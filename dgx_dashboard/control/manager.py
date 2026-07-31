@@ -292,10 +292,10 @@ class RunManager:
             "eof": next_offset >= size,
         }
 
-    def latest_serving_recipes(self) -> dict[str, tuple[str, str]]:
+    def latest_serving_recipes(self) -> dict[str, tuple[str, str, str | None]]:
         with self._lock:
             records = sorted(self._records.values(), key=lambda item: item["created_at"], reverse=True)
-            latest: dict[str, tuple[str, str]] = {}
+            latest: dict[str, tuple[str, str, str | None]] = {}
             for record in records:
                 request = record["request"]
                 target = request["target"]
@@ -305,7 +305,12 @@ class RunManager:
                     or target in latest
                 ):
                     continue
-                latest[target] = (request["engine"], request["artifact"])
+                operation = validate_persisted_operation(request, self.catalog)
+                latest[target] = (
+                    request["engine"],
+                    request["artifact"],
+                    operation.launch_profile,
+                )
             return latest
 
     def _watch(self, run_id: str) -> None:
@@ -544,12 +549,20 @@ class RunManager:
             new_state = "interrupted"
             if operation.kind == "serving" and operation.recipe is not None:
                 if operation.action in {"start", "verify"}:
-                    command = self.commands.serving(operation.recipe, "verify")
+                    command = self.commands.serving(
+                        operation.recipe,
+                        "verify",
+                        operation.launch_profile,
+                    )
                     returncode, _ = self._run_capture(command, run_id)
                     if returncode == 0:
                         new_state = "succeeded"
                 elif operation.action == "stop":
-                    command = self.commands.serving(operation.recipe, "status")
+                    command = self.commands.serving(
+                        operation.recipe,
+                        "status",
+                        operation.launch_profile,
+                    )
                     returncode, output = self._run_capture(command, run_id)
                     states = re.findall(rb"\bstate=([a-z]+)\b", output)
                     if returncode == 0 and states and all(state == b"absent" for state in states):

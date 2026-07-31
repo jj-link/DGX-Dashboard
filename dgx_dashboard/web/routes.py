@@ -152,10 +152,19 @@ def create_blueprint(
         if control is None:
             raise ApiProblem(403, "controls_disabled", "serving adapters are disabled")
         lines = query_integer("lines", 100, 1, 1000)
+        launch_profile = request.args.get("launch_profile")
         try:
-            payload = control.serving_logs(target, engine, artifact, lines)
+            payload = control.serving_logs(
+                target,
+                engine,
+                artifact,
+                launch_profile,
+                lines,
+            )
         except KeyError as error:
             raise ApiProblem(404, "recipe_not_found", "serving recipe does not exist") from error
+        except ValueError as error:
+            raise ApiProblem(400, "invalid_request", str(error)) from error
         except AdapterError as error:
             raise ApiProblem(500, "adapter_failed", "serving log adapter failed") from error
         return jsonify(payload)

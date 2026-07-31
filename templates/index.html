@@ -131,8 +131,15 @@
             <span>Exact recipe</span>
             <select id="serve-artifact"></select>
           </label>
+          <label class="control-field control-field-wide" id="serve-launch-profile-field" hidden>
+            <span>Launch profile <em>exact lifecycle identity</em></span>
+            <select id="serve-launch-profile"></select>
+          </label>
         </div>
-        <div class="recipe-readout" id="serve-recipe-meta">Select an enabled recipe.</div>
+        <div class="recipe-readout">
+          <div id="serve-recipe-meta">Select an enabled recipe.</div>
+          <div class="profile-readout" id="serve-profile-meta" hidden></div>
+        </div>
         <div class="control-actions">
           <button type="button" class="control-button control-button-primary" data-serve-action="start">Start + verify</button>
           <button type="button" class="control-button" data-serve-action="verify">Verify</button>

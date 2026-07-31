@@ -121,13 +121,20 @@
     return status?.state === 'running' ? status : null;
   }
 
-  function matchesRunningRecipe(recipe, running) {
+  function selectedLaunchProfile(recipe = selectedRecipe()) {
+    if (!recipe?.launch_profiles?.length) return null;
+    return byId('serve-launch-profile').value || recipe.default_launch_profile;
+  }
+
+  function matchesRunningRecipe(recipe, running, launchProfile = selectedLaunchProfile(recipe)) {
     return !running || (
       recipe?.target === running.target
       && recipe?.engine === running.engine
       && recipe?.artifact === running.artifact
+      && launchProfile === (running.launch_profile ?? null)
     );
   }
+
 
   function syncServingSelectors(preferRunning = false) {
     if (!catalog?.enabled) return;
@@ -153,7 +160,7 @@
     } else if (recipes.some(recipe => recipe.artifact === previousArtifact)) {
       byId('serve-artifact').value = previousArtifact;
     }
-    updateRecipeReadout();
+    syncLaunchProfileSelector(selectedRecipe(), running, preferRunning);
   }
 
   function selectedRecipe() {
@@ -164,6 +171,58 @@
     return catalog.recipes.find(recipe => recipe.target === target && recipe.engine === engine && recipe.artifact === artifact) || null;
   }
 
+  function syncLaunchProfileSelector(recipe, running = null, preferRunning = false) {
+    const field = byId('serve-launch-profile-field');
+    const select = byId('serve-launch-profile');
+    const profiles = recipe?.launch_profiles || [];
+    if (!profiles.length) {
+      field.hidden = true;
+      select.innerHTML = '';
+      updateRecipeReadout();
+      return;
+    }
+
+    const previous = select.value;
+    const names = profiles.map(profile => profile.name);
+    select.innerHTML = profiles
+      .map(profile => `<option value="${escapeHtml(profile.name)}">${escapeHtml(profile.name.toUpperCase())}</option>`)
+      .join('');
+    const runningProfile = (
+      preferRunning
+      && running?.engine === recipe.engine
+      && running?.artifact === recipe.artifact
+      && names.includes(running.launch_profile)
+    ) ? running.launch_profile : null;
+    if (runningProfile) select.value = runningProfile;
+    else if (names.includes(previous)) select.value = previous;
+    else select.value = recipe.default_launch_profile;
+    field.hidden = false;
+    updateRecipeReadout();
+  }
+
+  function formatContextLength(value) {
+    if (!Number.isFinite(value)) return '--';
+    if (value >= 1_000_000) return `${(value / 1_000_000).toFixed(2).replace(/\.?0+$/, '')}M`;
+    return `${Math.round(value / 1000)}K`;
+  }
+
+  function renderProfileDetails(recipe) {
+    const output = byId('serve-profile-meta');
+    const selected = selectedLaunchProfile(recipe);
+    const profile = recipe?.launch_profiles?.find(item => item.name === selected);
+    if (!profile) {
+      output.hidden = true;
+      output.innerHTML = '';
+      return;
+    }
+    output.innerHTML = `
+      <span>KV cache<strong>${escapeHtml(profile.kv_cache_dtype)}</strong></span>
+      <span>Context<strong>${escapeHtml(formatContextLength(profile.context_length))}</strong></span>
+      <span>Sequences<strong>${escapeHtml(profile.max_sequences)}</strong></span>
+      <span>Spec tokens<strong>MTP${escapeHtml(profile.speculative_tokens)}</strong></span>`;
+    output.hidden = false;
+  }
+
   function updateRecipeReadout() {
     const recipe = selectedRecipe();
     const state = statuses.get(recipe?.target);
@@ -171,14 +230,27 @@
     if (!recipe) {
       byId('serve-recipe-meta').textContent = 'No recipe is available for this target and engine.';
       byId('serve-selection-state').textContent = 'NO RECIPE';
+      renderProfileDetails(null);
+      return;
+    }
+    renderProfileDetails(recipe);
+    if (state?.state === 'conflict') {
+      const profiles = (state.running_profiles || [])
+        .map(item => item.launch_profile || `${item.engine}/${item.artifact}`)
+        .join(', ');
+      byId('serve-recipe-meta').textContent = `${targetLabel(recipe.target)} reports multiple running launch profiles: ${profiles}. Resolve the conflict outside this form before operating the cluster.`;
+      byId('serve-selection-state').textContent = 'CONFLICT';
       return;
     }
     if (running && !matchesRunningRecipe(recipe, running)) {
-      byId('serve-recipe-meta').textContent = `${targetLabel(recipe.target)} is occupied by ${running.served} · active recipe ${running.engine}/${running.artifact}. Select and stop the active recipe before starting another.`;
+      const activeProfile = running.launch_profile ? ` @ ${running.launch_profile}` : '';
+      byId('serve-recipe-meta').textContent = `${targetLabel(recipe.target)} is occupied by ${running.served} · active recipe ${running.engine}/${running.artifact}${activeProfile}. Select and stop that exact lifecycle identity before starting another.`;
       byId('serve-selection-state').textContent = 'OCCUPIED';
       return;
     }
-    byId('serve-recipe-meta').textContent = `${recipe.served} · ${recipe.profile} profile · exact artifact ${recipe.artifact}`;
+    const launchProfile = selectedLaunchProfile(recipe);
+    const profileText = launchProfile ? ` · ${launchProfile} launch profile` : '';
+    byId('serve-recipe-meta').textContent = `${recipe.served} · ${recipe.profile} target${profileText} · exact artifact ${recipe.artifact}`;
     byId('serve-selection-state').textContent = state?.state ? state.state.toUpperCase() : 'STATUS UNKNOWN';
   }
 
@@ -204,9 +276,17 @@
     byId('control-targets').innerHTML = catalog.targets.map(target => {
       const status = statuses.get(target) || { state: stale ? 'error' : 'untracked' };
       const state = stale ? 'error' : status.state;
-      const model = status.served || 'No tracked recipe';
+      const profile = status.launch_profile ? ` · ${status.launch_profile}` : '';
+      const model = status.served ? `${status.served}${profile}` : (
+        state === 'conflict' ? 'Multiple launch profiles detected' : 'No tracked recipe'
+      );
       const endpoint = status.endpoint || (state === 'untracked' ? 'Awaiting first dashboard operation' : 'Endpoint resolved by adapter');
-      const error = stale ? message : status.error;
+      const conflict = (status.running_profiles || [])
+        .map(item => item.launch_profile || `${item.engine}/${item.artifact}`)
+        .join(', ');
+      const error = stale ? message : (
+        state === 'conflict' ? `Running identities: ${conflict}` : status.error
+      );
       return `<article class="target-card" data-state="${escapeHtml(state)}">
         <div class="target-card-head">
           <span class="target-name">${escapeHtml(targetLabel(target))}</span>
@@ -221,15 +301,23 @@
   async function submitServing(action) {
     const recipe = selectedRecipe();
     if (!recipe) return;
-    const running = runningRecipe(recipe.target);
-    if (running && !matchesRunningRecipe(recipe, running)) {
-      const instruction = action === 'start'
-        ? 'Stop that active recipe before starting another.'
-        : 'Select the active recipe before operating it.';
-      showOperationError(new Error(`${targetLabel(recipe.target)} is running ${running.served} (${running.engine}/${running.artifact}). ${instruction}`));
+    const status = statuses.get(recipe.target);
+    if (status?.state === 'conflict') {
+      showOperationError(new Error(`${targetLabel(recipe.target)} has multiple running launch profiles. Resolve the conflict before submitting another lifecycle action.`));
       return;
     }
-    if (action === 'stop' && !window.confirm(`Stop ${recipe.served} on ${targetLabel(recipe.target)}?`)) return;
+    const launchProfile = selectedLaunchProfile(recipe);
+    const running = runningRecipe(recipe.target);
+    if (running && !matchesRunningRecipe(recipe, running, launchProfile)) {
+      const activeProfile = running.launch_profile ? ` @ ${running.launch_profile}` : '';
+      const instruction = action === 'start'
+        ? 'Stop that active lifecycle identity before starting another.'
+        : 'Select the active lifecycle identity before operating it.';
+      showOperationError(new Error(`${targetLabel(recipe.target)} is running ${running.served} (${running.engine}/${running.artifact}${activeProfile}). ${instruction}`));
+      return;
+    }
+    const profileText = launchProfile ? ` using ${launchProfile}` : '';
+    if (action === 'stop' && !window.confirm(`Stop ${recipe.served}${profileText} on ${targetLabel(recipe.target)}?`)) return;
     setActionBusy(true);
     try {
       const created = await jsonRequest('/api/runs', mutationOptions({
@@ -238,6 +326,7 @@
         target: recipe.target,
         engine: recipe.engine,
         artifact: recipe.artifact,
+        launch_profile: launchProfile,
       }));
       selectedRunId = created.id;
       await fetchRuns();
@@ -324,7 +413,8 @@
   function requestSummary(run) {
     const value = run.request || {};
     if (run.kind === 'serving') {
-      return `${value.action} · ${value.target} · ${value.engine}/${value.artifact}`;
+      const profile = value.launch_profile ? ` @ ${value.launch_profile}` : '';
+      return `${value.action} · ${value.target} · ${value.engine}/${value.artifact}${profile}`;
     }
     const lang = value.options?.lang || 'all six';
     return `oneshot · ${value.target} · ${lang}`;
@@ -414,11 +504,14 @@
     const recipe = selectedRecipe();
     if (!recipe) return;
     const lines = byId('serve-log-lines').value;
+    const launchProfile = selectedLaunchProfile(recipe);
     const output = byId('serve-log-output');
     output.textContent = 'Loading exact-container log…';
+    const query = new URLSearchParams({ lines });
+    if (launchProfile) query.set('launch_profile', launchProfile);
     try {
       const payload = await jsonRequest(
-        `/api/serving/${encodeURIComponent(recipe.target)}/${encodeURIComponent(recipe.engine)}/${encodeURIComponent(recipe.artifact)}/logs?lines=${encodeURIComponent(lines)}`
+        `/api/serving/${encodeURIComponent(recipe.target)}/${encodeURIComponent(recipe.engine)}/${encodeURIComponent(recipe.artifact)}/logs?${query}`
       );
       output.textContent = payload.text || '[empty log]';
       if (payload.truncated) output.textContent += '\n[server response cap reached]';
@@ -459,7 +552,10 @@
 
   byId('serve-target').addEventListener('change', () => syncServingSelectors(true));
   byId('serve-engine').addEventListener('change', () => syncServingSelectors(false));
-  byId('serve-artifact').addEventListener('change', updateRecipeReadout);
+  byId('serve-artifact').addEventListener('change', () => {
+    syncLaunchProfileSelector(selectedRecipe());
+  });
+  byId('serve-launch-profile').addEventListener('change', updateRecipeReadout);
   document.querySelectorAll('[data-serve-action]').forEach(button => {
     button.addEventListener('click', () => submitServing(button.dataset.serveAction));
   });

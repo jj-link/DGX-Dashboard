@@ -17,22 +17,25 @@ REPO_ROOT="$(cd "$CONTROL_ROOT/.." && pwd -P)"
 ENGINE="$(basename "$(dirname "$SCRIPT_DIR")")"
 ARTIFACT="$(basename "$SCRIPT_DIR")"
 PACKAGE="$CONTROL_ROOT/serve/cluster/$ENGINE/$ARTIFACT"
+PROFILE_ROOT="$PACKAGE/profiles"
 PARSER="$CONTROL_ROOT/tools/parse-runtime-env.py"
 REMOTE_REPO_ROOT=/home/jjlink/dgx-dashboard
 HEAD_HOST=spark2-ts
 WORKER_HOST=spark3-ts
 API_PORT=8888
+if [[ -d "$PROFILE_ROOT" && $# -gt 0 ]]; then
+  if [[ "$ACTION" != logs || ! "$1" =~ ^[1-9][0-9]{0,5}$ ]]; then
+    CLUSTER_PROFILE="$1"
+    export CLUSTER_PROFILE
+    shift
+  fi
+fi
 case "$ACTION" in
   start)
-    (( $# <= 1 )) || fail "start accepts at most one profile argument"
-    if (( $# == 1 )); then
-      [[ "$ENGINE" == vllm ]] || fail "the SGLang cluster start action accepts no profile argument"
-      CLUSTER_PROFILE="$1"
-      export CLUSTER_PROFILE
-    fi
+    (( $# == 0 )) || fail "start accepts at most one profile argument"
     ;;
   logs)
-    (( $# <= 1 )) || fail "logs accepts at most one line-count argument"
+    (( $# <= 1 )) || fail "logs accepts an optional profile and line count"
     if (( $# == 1 )); then
       [[ "$1" =~ ^[1-9][0-9]{0,5}$ ]] || fail "log line count must be between 1 and 999999"
       LOG_LINES="$1"
@@ -40,7 +43,7 @@ case "$ACTION" in
     fi
     ;;
   *)
-    (( $# == 0 )) || fail "$ACTION accepts no action arguments"
+    (( $# == 0 )) || fail "$ACTION accepts at most one profile argument"
     ;;
 esac
 
@@ -61,10 +64,17 @@ case "$ENGINE/$ARTIFACT" in
     MAX_MODEL_LEN=262144
     ;;
   vllm/deepseek_ai_deepseek_v4_flash_dspark_tp2)
-    PROFILE="${CLUSTER_PROFILE:-quality}"
-    [[ "$PROFILE" =~ ^(balanced|quality|throughput)$ ]] || fail "invalid DeepSeek cluster profile '$PROFILE'"
-    PROFILE_FILE="$PACKAGE/profiles/$PROFILE.env"
-    [[ -f "$PROFILE_FILE" ]] || fail "missing DeepSeek cluster profile '$PROFILE_FILE'"
+    DEFAULT_PROFILE_FILE="$PROFILE_ROOT/default"
+    [[ -f "$DEFAULT_PROFILE_FILE" && ! -L "$DEFAULT_PROFILE_FILE" ]] ||
+      fail "missing DeepSeek default launch profile"
+    mapfile -t default_profile_lines <"$DEFAULT_PROFILE_FILE"
+    (( ${#default_profile_lines[@]} == 1 )) || fail "invalid DeepSeek default launch profile"
+    PROFILE="${CLUSTER_PROFILE:-${default_profile_lines[0]}}"
+    [[ "$PROFILE" =~ ^[a-z0-9][a-z0-9_-]*$ ]] || fail "invalid DeepSeek cluster profile '$PROFILE'"
+    PROFILE_FILE="$PROFILE_ROOT/$PROFILE.env"
+    [[ -f "$PROFILE_FILE" && ! -L "$PROFILE_FILE" ]] || fail "unknown DeepSeek cluster profile '$PROFILE'"
+    CLUSTER_PROFILE="$PROFILE"
+    export CLUSTER_PROFILE
     set -a
     source "$PROFILE_FILE"
     set +a

@@ -12,6 +12,7 @@ from dgx_dashboard.control.catalog import ServeRecipe, ServingCatalog
 _LANGUAGES = {"cpp", "go", "java", "javascript", "python", "rust"}
 _SERVING_ACTIONS = {"start", "stop", "verify"}
 _ARTIFACT_RE = re.compile(r"[a-z0-9][a-z0-9_]*\Z")
+_LAUNCH_PROFILE_RE = re.compile(r"[a-z0-9][a-z0-9_-]*\Z")
 _BENCHMARK_OPTION_KEYS = {
     "lang",
     "num_tests",
@@ -49,6 +50,7 @@ class OperationRequest:
     public: Mapping[str, Any]
     recipe: ServeRecipe | None = None
     action: str | None = None
+    launch_profile: str | None = None
     options: Mapping[str, Any] | None = None
 
 
@@ -97,9 +99,14 @@ def validate_operation(payload: Any, catalog: ServingCatalog) -> OperationReques
 
 
 def validate_persisted_operation(payload: Any, catalog: ServingCatalog) -> OperationRequest:
-    """Validate durable history while allowing a removed serving recipe."""
+    """Validate durable history while allowing removed recipes and the legacy request shape."""
     if isinstance(payload, dict) and payload.get("kind") == "serving":
-        return _validate_serving(payload, catalog, allow_unknown_recipe=True)
+        return _validate_serving(
+            payload,
+            catalog,
+            allow_unknown_recipe=True,
+            allow_legacy_profile=True,
+        )
     return validate_operation(payload, catalog)
 
 
@@ -108,8 +115,13 @@ def _validate_serving(
     catalog: ServingCatalog,
     *,
     allow_unknown_recipe: bool = False,
+    allow_legacy_profile: bool = False,
 ) -> OperationRequest:
-    _exact_keys(payload, {"kind", "action", "target", "engine", "artifact"}, "serving request")
+    legacy_profile = allow_legacy_profile and "launch_profile" not in payload
+    expected = {"kind", "action", "target", "engine", "artifact"}
+    if not legacy_profile:
+        expected.add("launch_profile")
+    _exact_keys(payload, expected, "serving request")
     action = payload["action"]
     if not isinstance(action, str) or action not in _SERVING_ACTIONS:
         raise RequestValidationError("action must be start, stop, or verify")
@@ -126,6 +138,28 @@ def _validate_serving(
         if not allow_unknown_recipe:
             raise UnknownRecipeError("unknown serving recipe") from error
         recipe = None
+
+    raw_launch_profile = payload.get("launch_profile")
+    if recipe is None:
+        if raw_launch_profile is not None and (
+            not isinstance(raw_launch_profile, str)
+            or _LAUNCH_PROFILE_RE.fullmatch(raw_launch_profile) is None
+        ):
+            raise RequestValidationError("launch_profile is invalid")
+        launch_profile = raw_launch_profile
+    else:
+        try:
+            launch_profile = recipe.resolve_launch_profile(
+                raw_launch_profile,
+                use_default=legacy_profile,
+            )
+        except ValueError as error:
+            if recipe.launch_profiles and raw_launch_profile is None:
+                message = "launch_profile is required for this recipe"
+            else:
+                message = "launch_profile is not supported by this recipe"
+            raise RequestValidationError(message) from error
+
     public = {
         "kind": "serving",
         "action": action,
@@ -133,6 +167,8 @@ def _validate_serving(
         "engine": engine,
         "artifact": artifact,
     }
+    if not legacy_profile:
+        public["launch_profile"] = launch_profile
     return OperationRequest(
         kind="serving",
         target=target,
@@ -140,6 +176,7 @@ def _validate_serving(
         public=public,
         recipe=recipe,
         action=action,
+        launch_profile=launch_profile,
     )
 
 

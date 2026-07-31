@@ -9,7 +9,7 @@ from pathlib import Path
 
 import pytest
 
-from dgx_dashboard.control.catalog import ServeRecipe, ServingCatalog
+from dgx_dashboard.control.catalog import LaunchProfile, ServeRecipe, ServingCatalog
 from dgx_dashboard.control.commands import CommandBuilder
 from dgx_dashboard.control.preflight import ControlPreflight, PreflightError
 from dgx_dashboard.control.requests import (
@@ -17,6 +17,7 @@ from dgx_dashboard.control.requests import (
     validate_operation,
     validate_persisted_operation,
 )
+from dgx_dashboard.control.service import ControlService
 
 
 _METADATA_KEYS = (
@@ -89,6 +90,8 @@ def test_catalog_uses_strict_parser_and_exposes_no_private_metadata(tmp_path):
                 "artifact": "model_a",
                 "profile": "rtx6000",
                 "served": "served-model",
+                "launch_profiles": [],
+                "default_launch_profile": None,
             }
         ],
     }
@@ -97,6 +100,57 @@ def test_catalog_uses_strict_parser_and_exposes_no_private_metadata(tmp_path):
     assert kwargs["stdin"] == subprocess.DEVNULL
     with pytest.raises(KeyError):
         catalog.get("local", "vllm", "../model_a")
+
+
+def test_catalog_exposes_validated_cluster_launch_profiles(tmp_path):
+    root = _catalog_root(tmp_path)
+    package = root / "control" / "serve" / "cluster" / "vllm" / "model_cluster"
+    package.mkdir(parents=True)
+    (package / "runtime.env").write_text("validated by injected parser\n", encoding="utf-8")
+    for action in ("start", "status", "logs", "verify", "stop"):
+        _executable(package / f"{action}.sh")
+    profiles = package / "profiles"
+    profiles.mkdir()
+    (profiles / "default").write_text("quality\n", encoding="utf-8")
+    for name, cache, context, sequences, tokens in (
+        ("balanced", "nvfp4_ds_mla", 1_048_576, 6, 3),
+        ("quality", "fp8_ds_mla", 1_048_576, 6, 3),
+        ("throughput", "nvfp4_ds_mla", 350_000, 12, 5),
+    ):
+        (profiles / f"{name}.env").write_text(
+            f"KV_CACHE_DTYPE={cache}\n"
+            f"MAX_MODEL_LEN={context}\n"
+            f"MAX_NUM_SEQS={sequences}\n"
+            f"MTP_NUM_TOKENS={tokens}\n",
+            encoding="utf-8",
+        )
+
+    catalog = ServingCatalog(root, ("local", "cluster"), run_parser=_ParserRunner())
+    recipe = catalog.get("cluster", "vllm", "model_cluster")
+    assert recipe.default_launch_profile == "quality"
+    assert [profile.public() for profile in recipe.launch_profiles] == [
+        {
+            "name": "balanced",
+            "kv_cache_dtype": "nvfp4_ds_mla",
+            "context_length": 1_048_576,
+            "max_sequences": 6,
+            "speculative_tokens": 3,
+        },
+        {
+            "name": "quality",
+            "kv_cache_dtype": "fp8_ds_mla",
+            "context_length": 1_048_576,
+            "max_sequences": 6,
+            "speculative_tokens": 3,
+        },
+        {
+            "name": "throughput",
+            "kv_cache_dtype": "nvfp4_ds_mla",
+            "context_length": 350_000,
+            "max_sequences": 12,
+            "speculative_tokens": 5,
+        },
+    ]
 
 
 def _recipe(root: Path, target: str = "local") -> ServeRecipe:
@@ -123,6 +177,35 @@ class _RequestCatalog:
         return self.recipe
 
 
+class _ProfileCatalog:
+    targets = ("cluster",)
+
+    def __init__(self, root: Path) -> None:
+        self.recipe = ServeRecipe(
+            target="cluster",
+            engine="vllm",
+            artifact="model_cluster",
+            profile="cluster",
+            served="served-cluster",
+            container_name="served-cluster-container",
+            package=root,
+            launch_profiles=(
+                LaunchProfile("balanced", "nvfp4_ds_mla", 1_048_576, 6, 3),
+                LaunchProfile("quality", "fp8_ds_mla", 1_048_576, 6, 3),
+                LaunchProfile("throughput", "nvfp4_ds_mla", 350_000, 12, 5),
+            ),
+            default_launch_profile="quality",
+        )
+
+    def get(self, target, engine, artifact):
+        if (target, engine, artifact) != self.recipe.key:
+            raise KeyError
+        return self.recipe
+
+    def recipes(self):
+        return (self.recipe,)
+
+
 def test_typed_requests_build_fixed_argv_and_allowlisted_environment(settings, tmp_path, monkeypatch):
     root = tmp_path / "repo"
     root.mkdir()
@@ -145,7 +228,7 @@ def test_typed_requests_build_fixed_argv_and_allowlisted_environment(settings, t
     monkeypatch.setenv("SSH_AUTH_SOCK", "/tmp/agent.sock")
 
     serving = validate_operation(
-        {"kind": "serving", "action": "start", "target": "local", "engine": "vllm", "artifact": "model_a"},
+        {"kind": "serving", "action": "start", "target": "local", "engine": "vllm", "artifact": "model_a", "launch_profile": None},
         catalog,
     )
     plan = commands.plan(serving, "00000000-0000-4000-8000-000000000001")
@@ -185,6 +268,105 @@ def test_typed_requests_build_fixed_argv_and_allowlisted_environment(settings, t
     assert benchmark_plan.benchmark_label == "io.dgx-dashboard.run-id=00000000-0000-4000-8000-000000000002"
 
 
+def test_profiled_serving_requests_propagate_exact_lifecycle_identity(settings, tmp_path):
+    root = tmp_path / "repo"
+    root.mkdir()
+    control_settings = replace(
+        settings.control,
+        enabled=True,
+        wrapper_root=root,
+        state_dir=tmp_path / "runs",
+        polyglot_root=tmp_path / "polyglot",
+        targets=("cluster",),
+    )
+    commands = CommandBuilder(control_settings, settings.benchmarks)
+    catalog = _ProfileCatalog(root)
+    payload = {
+        "kind": "serving",
+        "action": "start",
+        "target": "cluster",
+        "engine": "vllm",
+        "artifact": "model_cluster",
+        "launch_profile": "throughput",
+    }
+
+    operation = validate_operation(payload, catalog)
+    plan = commands.plan(operation, "00000000-0000-4000-8000-000000000003")
+    assert operation.public == payload
+    assert operation.launch_profile == "throughput"
+    commands_in_plan = [plan.command, plan.verify, *plan.cleanup]
+    assert all(command is not None for command in commands_in_plan)
+    assert all(command.environment["CLUSTER_PROFILE"] == "throughput" for command in commands_in_plan if command)
+
+    with pytest.raises(RequestValidationError, match="launch_profile is required"):
+        validate_operation({**payload, "launch_profile": None}, catalog)
+    with pytest.raises(RequestValidationError, match="not supported"):
+        validate_operation({**payload, "launch_profile": "latency"}, catalog)
+    with pytest.raises(RequestValidationError, match="missing field"):
+        validate_operation({key: value for key, value in payload.items() if key != "launch_profile"}, catalog)
+
+    legacy = {key: value for key, value in payload.items() if key != "launch_profile"}
+    persisted = validate_persisted_operation(legacy, catalog)
+    assert persisted.public == legacy
+    assert persisted.launch_profile == "quality"
+
+
+def test_status_discovers_manual_profiles_and_reports_conflicts(tmp_path, monkeypatch):
+    catalog = _ProfileCatalog(tmp_path)
+
+    class Manager:
+        reconciliation = []
+
+        @staticmethod
+        def latest_serving_recipes():
+            return {}
+
+    service = ControlService(catalog, object(), Manager())
+
+    def one_running(_target, _engine, _artifact, launch_profile):
+        return {
+            "target": "cluster",
+            "engine": "vllm",
+            "artifact": "model_cluster",
+            "launch_profile": launch_profile,
+            "served": "served-cluster",
+            "state": "running" if launch_profile == "throughput" else "absent",
+            "ready": launch_profile == "throughput",
+            "endpoint": "http://100.64.0.8:8888/v1" if launch_profile == "throughput" else None,
+            "error": None,
+        }
+
+    monkeypatch.setattr(service, "_status_one", one_running)
+    status = service.serving_status()["targets"][0]
+    assert status["state"] == "running"
+    assert status["launch_profile"] == "throughput"
+
+    def conflicting(_target, _engine, _artifact, launch_profile):
+        result = one_running(_target, _engine, _artifact, launch_profile)
+        if launch_profile == "quality":
+            result["state"] = "running"
+            result["ready"] = True
+        return result
+
+    monkeypatch.setattr(service, "_status_one", conflicting)
+    status = service.serving_status()["targets"][0]
+    assert status["state"] == "conflict"
+    assert status["error"] == "multiple_profiles_running"
+    assert [item["launch_profile"] for item in status["running_profiles"]] == ["quality", "throughput"]
+
+    def split_ranks(_target, _engine, _artifact, launch_profile):
+        result = one_running(_target, _engine, _artifact, launch_profile)
+        result["state"] = "mixed" if launch_profile == "balanced" else "absent"
+        result["ready"] = False
+        return result
+
+    monkeypatch.setattr(service, "_status_one", split_ranks)
+    status = service.serving_status()["targets"][0]
+    assert status["state"] == "conflict"
+    assert status["error"] == "profile_rank_mismatch"
+    assert [item["launch_profile"] for item in status["running_profiles"]] == ["balanced"]
+
+
 def test_request_validation_rejects_bool_numeric_and_arbitrary_surface(tmp_path):
     catalog = _RequestCatalog(tmp_path)
     base = {"kind": "benchmark", "benchmark": "oneshot", "target": "local"}
@@ -206,7 +388,7 @@ def test_persisted_requests_allow_only_well_formed_retired_recipes(tmp_path):
         "artifact": "retired_recipe",
     }
     with pytest.raises(RequestValidationError, match="unknown serving recipe"):
-        validate_operation(request, catalog)
+        validate_operation({**request, "launch_profile": None}, catalog)
 
     persisted = validate_persisted_operation(request, catalog)
     assert persisted.public == request

@@ -697,7 +697,8 @@
   .target-card[data-state="absent"] { border-left-color: var(--text-dim); }
   .target-card[data-state="mixed"],
   .target-card[data-state="untracked"] { border-left-color: var(--yellow); }
-  .target-card[data-state="error"] { border-left-color: var(--red); }
+  .target-card[data-state="error"],
+  .target-card[data-state="conflict"] { border-left-color: var(--red); }
 
   .target-card-head {
     display: flex;
@@ -729,7 +730,8 @@
   .state-chip.failed,
   .state-chip.timed_out,
   .state-chip.launch_failed,
-  .state-chip.cleanup_failed { color: var(--red); }
+  .state-chip.cleanup_failed,
+  .state-chip.conflict { color: var(--red); }
   .state-chip.queued,
   .state-chip.running-run,
   .state-chip.cancel_requested { color: var(--yellow); }
@@ -799,6 +801,8 @@
   }
 
   .control-field-wide { grid-column: 1 / -1; }
+  .control-field[hidden],
+  .profile-readout[hidden] { display: none; }
 
   .control-field > span {
     color: var(--text-dim);
@@ -847,6 +851,38 @@
     color: var(--text-dim);
     font-size: 10px;
     line-height: 1.5;
+  }
+
+  .profile-readout {
+    display: grid;
+    grid-template-columns: repeat(4, minmax(0, 1fr));
+    gap: 1px;
+    margin-top: 9px;
+    border: 1px solid rgba(24, 255, 255, 0.12);
+    background: rgba(24, 255, 255, 0.12);
+  }
+
+  .profile-readout span {
+    min-width: 0;
+    padding: 7px 8px;
+    background: #0d0d14;
+    color: var(--text-dim);
+    font-size: 8px;
+    letter-spacing: 0.65px;
+    text-transform: uppercase;
+  }
+
+  .profile-readout strong {
+    display: block;
+    margin-top: 3px;
+    overflow: hidden;
+    color: var(--cyan);
+    font-size: 10px;
+    font-weight: 600;
+    letter-spacing: 0;
+    text-overflow: ellipsis;
+    text-transform: none;
+    white-space: nowrap;
   }
 
   .benchmark-note { border-left-color: var(--yellow); background: rgba(255, 202, 40, 0.035); }
@@ -994,6 +1030,7 @@
     .target-strip { grid-template-columns: 1fr 1fr; }
     .control-form-grid { grid-template-columns: 1fr; }
     .control-field-wide { grid-column: auto; }
+    .profile-readout { grid-template-columns: 1fr 1fr; }
     .control-actions,
     .log-controls { align-items: stretch; flex-direction: column; }
     .log-controls .control-field { width: 100%; }

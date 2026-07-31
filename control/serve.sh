@@ -13,10 +13,13 @@ usage:
   ./serve.sh spark1  <vllm|sglang> <exact-artifact-name> [engine args...]
   ./serve.sh spark2  <vllm|sglang> <exact-artifact-name> [engine args...]
   ./serve.sh spark3  <vllm|sglang> <exact-artifact-name> [engine args...]
-  ./serve.sh cluster <vllm|sglang> <exact-artifact-name> [status|logs|verify|stop]
+  ./serve.sh cluster <vllm|sglang> <exact-artifact-name> [start|status|logs|verify|stop] [profile] [action args...]
 
 single-device lifecycle after the artifact:
   status | logs [1..1000] | verify | stop
+cluster profiles:
+  Profile-aware recipes accept a validated profile after the action.
+  Omitting the action starts the recipe with its declared default profile.
 
 targets:
   local    workstation (rtx6000)
@@ -75,10 +78,25 @@ list_available() {
   fi
 }
 
+profile_summary() (
+  source "$1"
+  case "$KV_CACHE_DTYPE" in
+    fp8_ds_mla) kv='FP8 DS-MLA KV' ;;
+    nvfp4_ds_mla) kv='NVFP4 DS-MLA KV' ;;
+    *) kv="$KV_CACHE_DTYPE KV" ;;
+  esac
+  case "$MAX_MODEL_LEN" in
+    1048576) context='1M context' ;;
+    350000) context='350K context' ;;
+    *) context="$MAX_MODEL_LEN context" ;;
+  esac
+  printf '%s, %s, %s sequences, MTP%s' "$kv" "$context" "$MAX_NUM_SEQS" "$MTP_NUM_TOKENS"
+)
+
 list_cluster() {
   local engine="$1" destination_fd="${2:-2}"
-  local package required
-  local -a packages=()
+  local package required profile_file profile default_profile
+  local -a packages=() profile_names=()
   shopt -s nullglob
   for package in "$CONTROL_ROOT/serve/cluster/$engine"/*; do
     [[ -d "$package" && -f "$package/runtime.env" ]] || continue
@@ -93,6 +111,20 @@ list_cluster() {
       printf 'available cluster/%s artifacts:\n' "$engine"
       printf '  %s\n' "${packages[@]}" | LC_ALL=C sort
     } >&"$destination_fd"
+    for package in "$CONTROL_ROOT/serve/cluster/$engine"/*; do
+      [[ -d "$package/profiles" && -f "$package/profiles/default" ]] || continue
+      profile_names=()
+      for profile_file in "$package/profiles"/*.env; do
+        profile_names+=("$(basename "${profile_file%.env}")")
+      done
+      mapfile -t profile_names < <(printf '%s\n' "${profile_names[@]}" | LC_ALL=C sort)
+      default_profile="$(<"$package/profiles/default")"
+      printf '  %s profiles: %s (default: %s)\n' \
+        "$(basename "$package")" "${profile_names[*]}" "$default_profile"
+      for profile in "${profile_names[@]}"; do
+        printf '    %s: %s\n' "$profile" "$(profile_summary "$package/profiles/$profile.env")"
+      done
+    done >&"$destination_fd"
   fi
 }
 

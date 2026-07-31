@@ -212,6 +212,9 @@ def test_dispatcher() -> None:
             "available cluster/sglang artifacts:",
         ):
             assert catalog in help_result.stdout
+        assert "profiles: balanced quality throughput (default: quality)" in help_result.stdout
+        assert "quality: FP8 DS-MLA KV, 1M context, 6 sequences, MTP3" in help_result.stdout
+        assert "throughput: NVFP4 DS-MLA KV, 350K context, 12 sequences, MTP5" in help_result.stdout
         assert "docker " not in help_result.stdout
         assert not ssh_log.exists()
 

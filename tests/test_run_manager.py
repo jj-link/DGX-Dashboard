@@ -13,7 +13,7 @@ from pathlib import Path
 import pytest
 
 from dgx_dashboard.config import BenchmarkSettings, ControlSettings
-from dgx_dashboard.control.catalog import ServeRecipe
+from dgx_dashboard.control.catalog import LaunchProfile, ServeRecipe
 from dgx_dashboard.control.commands import CommandBuilder
 from dgx_dashboard.control.manager import RunConflict, RunManager
 from dgx_dashboard.control.requests import OperationRequest
@@ -107,6 +107,7 @@ def _serving_operation(catalog: _Catalog, target: str, action: str = "start") ->
         "target": target,
         "engine": recipe.engine,
         "artifact": recipe.artifact,
+        "launch_profile": None,
     }
     return OperationRequest(
         kind="serving",
@@ -115,6 +116,7 @@ def _serving_operation(catalog: _Catalog, target: str, action: str = "start") ->
         public=request,
         recipe=recipe,
         action=action,
+        launch_profile=None,
     )
 
 
@@ -292,6 +294,7 @@ def test_failed_start_does_not_hide_last_successful_serving_recipe(tmp_path):
         "target": "local",
         "engine": conflict_recipe.engine,
         "artifact": conflict_recipe.artifact,
+        "launch_profile": None,
     }
     conflict = manager.submit(
         OperationRequest(
@@ -301,10 +304,66 @@ def test_failed_start_does_not_hide_last_successful_serving_recipe(tmp_path):
             public=conflict_request,
             recipe=conflict_recipe,
             action="start",
+            launch_profile=None,
         )
     )
     assert _wait_terminal(manager, conflict["id"])["state"] == "failed"
-    assert manager.latest_serving_recipes() == {"local": ("vllm", "recipe_local")}
+    assert manager.latest_serving_recipes() == {"local": ("vllm", "recipe_local", None)}
+
+def test_launch_profile_is_persisted_and_restored_as_serving_identity(tmp_path):
+    root, state, commands, catalog = _make_builder(tmp_path)
+    recipe = ServeRecipe(
+        target="cluster",
+        engine="vllm",
+        artifact="recipe_cluster",
+        profile="cluster",
+        served="served-cluster",
+        container_name="container-cluster",
+        package=root,
+        launch_profiles=(
+            LaunchProfile("quality", "fp8_ds_mla", 1_048_576, 6, 3),
+            LaunchProfile("throughput", "nvfp4_ds_mla", 350_000, 12, 5),
+        ),
+        default_launch_profile="quality",
+    )
+    catalog.recipes["cluster"] = recipe
+    _write_script(
+        root / "serve.sh",
+        '[[ "${CLUSTER_PROFILE:-}" == throughput ]] || exit 9\n',
+    )
+    _write_script(root / "benchmark.sh", "exit 0\n")
+    request = {
+        "kind": "serving",
+        "action": "start",
+        "target": "cluster",
+        "engine": "vllm",
+        "artifact": "recipe_cluster",
+        "launch_profile": "throughput",
+    }
+    operation = OperationRequest(
+        kind="serving",
+        target="cluster",
+        resources=frozenset({"target:spark2", "target:spark3"}),
+        public=request,
+        recipe=recipe,
+        action="start",
+        launch_profile="throughput",
+    )
+
+    manager = RunManager(state, catalog, commands, retention=20)
+    submitted = manager.submit(operation)
+    completed = _wait_terminal(manager, submitted["id"])
+    assert completed["state"] == "succeeded"
+    assert completed["request"] == request
+    assert manager.latest_serving_recipes() == {
+        "cluster": ("vllm", "recipe_cluster", "throughput"),
+    }
+
+    restored = RunManager(state, catalog, commands, retention=20)
+    assert restored.latest_serving_recipes() == {
+        "cluster": ("vllm", "recipe_cluster", "throughput"),
+    }
+
 
 
 def test_serving_verification_does_not_block_run_reads(tmp_path):

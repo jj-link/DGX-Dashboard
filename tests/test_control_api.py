@@ -94,9 +94,18 @@ class _Control:
     def serving_status(self):
         return {"targets": [], "reconciliation": []}
 
-    def serving_logs(self, target, engine, artifact, lines):
-        self.catalog.get(target, engine, artifact)
-        return {"target": target, "engine": engine, "artifact": artifact, "lines": lines, "text": "ok\n", "truncated": False}
+    def serving_logs(self, target, engine, artifact, launch_profile, lines):
+        recipe = self.catalog.get(target, engine, artifact)
+        recipe.resolve_launch_profile(launch_profile)
+        return {
+            "target": target,
+            "engine": engine,
+            "artifact": artifact,
+            "launch_profile": launch_profile,
+            "lines": lines,
+            "text": "ok\n",
+            "truncated": False,
+        }
 
 
 def _auth() -> str:
@@ -141,6 +150,7 @@ def _serving_request():
         "target": "local",
         "engine": "vllm",
         "artifact": "model_a",
+        "launch_profile": None,
     }
 
 
@@ -151,7 +161,15 @@ def test_catalog_is_authenticated_and_contains_only_safe_metadata(settings, tmp_
     response = client.get("/api/control/catalog", headers={"Authorization": _auth()})
     assert response.status_code == 200
     recipe = response.get_json()["recipes"][0]
-    assert set(recipe) == {"target", "engine", "artifact", "profile", "served"}
+    assert set(recipe) == {
+        "target",
+        "engine",
+        "artifact",
+        "profile",
+        "served",
+        "launch_profiles",
+        "default_launch_profile",
+    }
     assert str(tmp_path) not in response.get_data(as_text=True)
 
 

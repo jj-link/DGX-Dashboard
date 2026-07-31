@@ -62,10 +62,16 @@ case "$ENGINE/$ARTIFACT" in
     MASTER_PORT=25001
     ;;
   vllm/deepseek_ai_deepseek_v4_flash_dspark_tp2)
-    PROFILE="${CLUSTER_PROFILE:-quality}"
-    [[ "$PROFILE" =~ ^(balanced|quality|throughput)$ ]] || fail "invalid DeepSeek cluster profile '$PROFILE'"
-    PROFILE_FILE="$PACKAGE/profiles/$PROFILE.env"
-    [[ -f "$PROFILE_FILE" ]] || fail "missing DeepSeek cluster profile '$PROFILE_FILE'"
+    PROFILE_ROOT="$PACKAGE/profiles"
+    DEFAULT_PROFILE_FILE="$PROFILE_ROOT/default"
+    [[ -f "$DEFAULT_PROFILE_FILE" && ! -L "$DEFAULT_PROFILE_FILE" ]] ||
+      fail "missing DeepSeek default launch profile"
+    mapfile -t default_profile_lines <"$DEFAULT_PROFILE_FILE"
+    (( ${#default_profile_lines[@]} == 1 )) || fail "invalid DeepSeek default launch profile"
+    PROFILE="${CLUSTER_PROFILE:-${default_profile_lines[0]}}"
+    [[ "$PROFILE" =~ ^[a-z0-9][a-z0-9_-]*$ ]] || fail "invalid DeepSeek cluster profile '$PROFILE'"
+    PROFILE_FILE="$PROFILE_ROOT/$PROFILE.env"
+    [[ -f "$PROFILE_FILE" && ! -L "$PROFILE_FILE" ]] || fail "unknown DeepSeek cluster profile '$PROFILE'"
     # Profiles are tracked, secret-free static assignments in this exact checkout.
     set -a
     # shellcheck disable=SC1090
@@ -288,6 +294,7 @@ start_node() {
   )
 
   if [[ "$ENGINE" == vllm ]]; then
+    environment+=( -e "CLUSTER_PROFILE=$PROFILE" )
     local -a profile_environment=(
       KV_CACHE_DTYPE MAX_NUM_SEQS MAX_NUM_BATCHED_TOKENS GPU_MEMORY_UTILIZATION MTP_NUM_TOKENS
       VLLM_USE_FLASHINFER_SAMPLER VLLM_USE_B12X_MOE VLLM_USE_B12X_WO_PROJECTION
@@ -337,6 +344,64 @@ start_node() {
     "$CONTROL_ROOT/runtime/cluster/serve-node.sh" "$ENGINE" "$ARTIFACT" >/dev/null
 }
 
+container_exists() {
+  docker inspect "$CONTAINER" >/dev/null 2>&1
+}
+
+container_env_value() {
+  local key="$1" line
+  while IFS= read -r line; do
+    if [[ "$line" == "$key="* ]]; then
+      printf '%s\n' "${line#*=}"
+      return 0
+    fi
+  done < <(docker inspect -f '{{range .Config.Env}}{{println .}}{{end}}' "$CONTAINER" 2>/dev/null)
+  return 1
+}
+
+profile_matches_container() {
+  [[ "$ENGINE" == vllm ]] || return 0
+  local actual variable
+  actual="$(container_env_value CLUSTER_PROFILE || true)"
+  if [[ -n "$actual" ]]; then
+    [[ "$actual" == "$PROFILE" ]]
+    return
+  fi
+  for variable in KV_CACHE_DTYPE MAX_MODEL_LEN MAX_NUM_SEQS MTP_NUM_TOKENS; do
+    actual="$(container_env_value "$variable" || true)"
+    [[ -n "$actual" && "$actual" == "${!variable}" ]] || return 1
+  done
+}
+
+status_node() {
+  local state endpoint=''
+  if ! container_exists || ! profile_matches_container; then
+    state=absent
+  elif [[ "$(docker inspect -f '{{.State.Running}}' "$CONTAINER" 2>/dev/null || true)" == true ]]; then
+    state=running
+    if [[ "$RANK" == 0 ]]; then
+      endpoint=" endpoint=http://$(single_tailscale_ipv4):$API_PORT/v1"
+    fi
+  else
+    state=stopped
+  fi
+  printf 'container=%s state=%s' "$CONTAINER" "$state"
+  [[ "$ENGINE" != vllm ]] || printf ' launch_profile=%s' "$PROFILE"
+  printf '%s\n' "$endpoint"
+}
+
+logs_node() {
+  container_exists && profile_matches_container ||
+    fail "the requested lifecycle identity is not active"
+  docker logs --tail "${LOG_LINES:-200}" "$CONTAINER"
+}
+
+stop_node() {
+  if container_exists && profile_matches_container; then
+    docker rm -f "$CONTAINER" >/dev/null 2>&1 || true
+  fi
+}
+
 wait_rank() {
   local attempt
   for attempt in 1 2 3 4 5; do
@@ -348,6 +413,7 @@ wait_rank() {
 
 verify_node() {
   [[ "$(docker inspect -f '{{.State.Running}}' "$CONTAINER" 2>/dev/null || true)" == true ]] || fail "container '$CONTAINER' is not running"
+  profile_matches_container || fail "container '$CONTAINER' has the wrong launch profile"
   docker inspect "$CONTAINER" | python3 -c '
 import json, sys
 container = json.load(sys.stdin)[0]
@@ -411,10 +477,10 @@ case "$ACTION" in
   preflight) preflight ;;
   start) start_node ;;
   wait-rank) wait_rank ;;
-  status) docker ps -a --filter "name=^/${CONTAINER}$" --format '{{.Names}}\t{{.Status}}\t{{.Image}}' ;;
-  logs) docker logs --tail "${LOG_LINES:-200}" "$CONTAINER" ;;
+  status) status_node ;;
+  logs) logs_node ;;
   verify) verify_node ;;
-  stop) docker rm -f "$CONTAINER" >/dev/null 2>&1 || true ;;
+  stop) stop_node ;;
   port-clear) port_clear || fail "port '$API_PORT' is still in use" ;;
   api-host) single_tailscale_ipv4 ;;
 esac

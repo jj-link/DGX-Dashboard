@@ -52,13 +52,24 @@ esac
 def install_controller_fakes(fake_bin: pathlib.Path) -> None:
     install_fake_git(fake_bin)
     executable(
+        fake_bin / "python3",
+        """#!/usr/bin/env bash
+if [[ "${1:-}" == - ]]; then
+  cat >/dev/null
+  [[ "${SCENARIO:-success}" != api-fail ]]
+  exit
+fi
+exec /usr/bin/python3 "$@"
+""",
+    )
+    executable(
         fake_bin / "ssh",
-        """#!/usr/bin/env python3
+        """#!/usr/bin/python3
 import json, os, pathlib, re, sys
 arguments = sys.argv[1:]
 remote = arguments[-1]
 host = next((value for value in arguments if value in ("spark2-ts", "spark3-ts")), "unknown")
-match = re.search(r"run-node\\.sh'?\\s+(preflight|start|wait-rank|status|logs|verify|stop|port-clear)\\s+(vllm|sglang)\\s+([a-z0-9_]+)\\s+([01])", remote)
+match = re.search(r"run-node\\.sh'?\\s+(preflight|start|wait-rank|status|logs|verify|stop|port-clear|api-host)\\s+(vllm|sglang)\\s+([a-z0-9_]+)\\s+([01])", remote)
 action, engine, artifact, rank = match.groups() if match else ("unknown", "", "", "")
 record = {"host": host, "action": action, "engine": engine, "artifact": artifact, "rank": rank, "remote": remote, "arguments": arguments}
 with pathlib.Path(os.environ["SSH_CAPTURE"]).open("a", encoding="utf-8") as stream:
@@ -69,6 +80,7 @@ if action == "preflight":
     print(f"RANK={rank}")
     if rank == "0": print("API_HOST=127.0.0.1")
     if scenario == "preflight-head-fail" and rank == "0": sys.exit(19)
+if action == "api-host": print("127.0.0.1")
 if action == "start":
     if scenario == "worker-start-fail" and rank == "1": sys.exit(20)
     if scenario == "head-start-fail" and rank == "0": sys.exit(21)
@@ -156,6 +168,54 @@ def test_cluster_front_door() -> None:
         ], environment)
         assert rejected.returncode == 1
         assert "invalid cluster action 'destroy'" in rejected.stderr
+
+
+def test_profiled_cluster_front_door() -> None:
+    with tempfile.TemporaryDirectory() as temporary:
+        temp = pathlib.Path(temporary)
+        fake_bin = temp / "bin"
+        fake_bin.mkdir()
+        install_controller_fakes(fake_bin)
+        capture = temp / "ssh.jsonl"
+        environment = base_environment(temp / "home", fake_bin)
+        environment.update({
+            "SSH_CAPTURE": str(capture),
+            "NVIDIA_CAPTURE": str(temp / "nvidia-called"),
+            "PREFLIGHT_ONLY": "1",
+        })
+        artifact = "deepseek_ai_deepseek_v4_flash_dspark_tp2"
+        expected_actions = {
+            "start": [("preflight", "0"), ("preflight", "1")],
+            "status": [("status", "0"), ("status", "1")],
+            "logs": [("logs", "0"), ("logs", "1")],
+            "verify": [("api-host", "0"), ("verify", "0"), ("verify", "1")],
+            "stop": [("stop", "0"), ("stop", "1"), ("port-clear", "0"), ("port-clear", "1")],
+        }
+
+        for profile in ("quality", "balanced", "throughput"):
+            for action, expected in expected_actions.items():
+                capture.unlink(missing_ok=True)
+                command = [str(FRONT), "cluster", "vllm", artifact, action, profile]
+                if action == "logs":
+                    command.append("17")
+                completed = run(command, environment)
+                assert completed.returncode == 0, completed.stderr
+                entries = records(capture)
+                assert action_pairs(entries) == expected
+                assert all(f"CLUSTER_PROFILE={profile}" in entry["remote"] for entry in entries)
+                if action == "logs":
+                    assert all("LOG_LINES=17" in entry["remote"] for entry in entries)
+
+        capture.unlink(missing_ok=True)
+        completed = run([str(FRONT), "cluster", "vllm", artifact, "logs", "17"], environment)
+        assert completed.returncode == 0, completed.stderr
+        assert all("CLUSTER_PROFILE=quality" in entry["remote"] for entry in records(capture))
+
+        capture.unlink(missing_ok=True)
+        rejected = run([str(FRONT), "cluster", "vllm", artifact, "status", "unknown"], environment)
+        assert rejected.returncode == 1
+        assert "unknown DeepSeek cluster profile 'unknown'" in rejected.stderr
+        assert records(capture) == []
 
 
 def run_controller_scenario(temp: pathlib.Path, scenario: str, preflight_only: bool = False) -> tuple[subprocess.CompletedProcess[str], list[dict[str, str]]]:
@@ -257,6 +317,17 @@ if arguments[:2] == ["container", "inspect"]:
         }]))
         sys.exit(0)
     sys.exit(1)
+profile = os.environ.get("FAKE_RUNNING_PROFILE")
+if arguments and arguments[0] == "inspect" and profile:
+    if "-f" in arguments:
+        template = arguments[arguments.index("-f") + 1]
+        if ".State.Running" in template:
+            print("true")
+        elif ".Config.Env" in template:
+            print(f"CLUSTER_PROFILE={profile}")
+        sys.exit(0)
+    print(json.dumps([{"State": {"Running": True}, "Config": {"Env": [f"CLUSTER_PROFILE={profile}"]}}]))
+    sys.exit(0)
 if arguments and arguments[0] == "run":
     print("new-container-id")
 sys.exit(0)
@@ -412,11 +483,103 @@ def test_node_preflight_and_launch() -> None:
             if engine == "vllm":
                 assert "VLLM_DSPARK_CONFIDENCE_THRESHOLD=0.0" in run_arguments
                 assert "KV_CACHE_DTYPE=fp8_ds_mla" in run_arguments
+                assert "CLUSTER_PROFILE=quality" in run_arguments
             else:
                 assert "DRAFTER_PATH=" not in run_arguments
                 assert any(value.startswith("DRAFTER_PATH=/models/hub/models--") for value in run_arguments)
                 assert "SGLANG_ENABLE_SPEC_V2=1" in run_arguments
                 assert "SGLANG_ENABLE_JIT_DEEPGEMM=0" in run_arguments
+
+        profile_expectations = {
+            "balanced": ("nvfp4_ds_mla", "1048576", "6", "3"),
+            "throughput": ("nvfp4_ds_mla", "350000", "12", "5"),
+        }
+        for profile, (kv_cache, context, sequences, mtp_tokens) in profile_expectations.items():
+            capture.write_text("", encoding="utf-8")
+            profiled_environment = dict(environment)
+            profiled_environment["CLUSTER_PROFILE"] = profile
+            completed = run(
+                [str(NODE), "start", "vllm", "deepseek_ai_deepseek_v4_flash_dspark_tp2", "0"],
+                profiled_environment,
+            )
+            assert completed.returncode == 0, (profile, completed.stderr)
+            run_arguments = next(
+                arguments
+                for arguments in docker_calls(capture)
+                if arguments and arguments[0] == "run"
+            )
+            for expected in (
+                f"CLUSTER_PROFILE={profile}",
+                f"KV_CACHE_DTYPE={kv_cache}",
+                f"MAX_MODEL_LEN={context}",
+                f"MAX_NUM_SEQS={sequences}",
+                f"MTP_NUM_TOKENS={mtp_tokens}",
+            ):
+                assert expected in run_arguments
+
+
+def test_profile_is_exact_node_lifecycle_identity() -> None:
+    with tempfile.TemporaryDirectory() as temporary:
+        temp = pathlib.Path(temporary)
+        fake_bin = temp / "bin"
+        fake_bin.mkdir()
+        install_node_fakes(fake_bin)
+        capture = temp / "docker.jsonl"
+        base = base_environment(temp / "home", fake_bin)
+        base.update({
+            "DGX_DASHBOARD_ROOT": str(REPO_ROOT),
+            "DOCKER_CAPTURE": str(capture),
+            "FAKE_RUNNING_PROFILE": "throughput",
+        })
+        command = [
+            str(NODE),
+            "status",
+            "vllm",
+            "deepseek_ai_deepseek_v4_flash_dspark_tp2",
+            "0",
+        ]
+
+        throughput = {**base, "CLUSTER_PROFILE": "throughput"}
+        completed = run(command, throughput)
+        assert completed.returncode == 0, completed.stderr
+        assert "state=running" in completed.stdout
+        assert "launch_profile=throughput" in completed.stdout
+        assert "endpoint=http://100.64.0.8:8888/v1" in completed.stdout
+
+        quality = {**base, "CLUSTER_PROFILE": "quality"}
+        completed = run(command, quality)
+        assert completed.returncode == 0, completed.stderr
+        assert "state=absent" in completed.stdout
+        assert "launch_profile=quality" in completed.stdout
+
+        rejected = run(
+            [str(NODE), "logs", "vllm", "deepseek_ai_deepseek_v4_flash_dspark_tp2", "0"],
+            quality,
+        )
+        assert rejected.returncode == 1
+        assert "requested lifecycle identity is not active" in rejected.stderr
+        rejected = run(
+            [str(NODE), "verify", "vllm", "deepseek_ai_deepseek_v4_flash_dspark_tp2", "0"],
+            quality,
+        )
+        assert rejected.returncode == 1
+        assert "wrong launch profile" in rejected.stderr
+
+        capture.write_text("", encoding="utf-8")
+        completed = run(
+            [str(NODE), "stop", "vllm", "deepseek_ai_deepseek_v4_flash_dspark_tp2", "0"],
+            quality,
+        )
+        assert completed.returncode == 0, completed.stderr
+        assert not any(call and call[0] == "rm" for call in docker_calls(capture))
+
+        capture.write_text("", encoding="utf-8")
+        completed = run(
+            [str(NODE), "stop", "vllm", "deepseek_ai_deepseek_v4_flash_dspark_tp2", "0"],
+            throughput,
+        )
+        assert completed.returncode == 0, completed.stderr
+        assert any(call[:2] == ["rm", "-f"] for call in docker_calls(capture))
 
 
 def test_sglang_command_contract() -> None:
@@ -547,8 +710,10 @@ sys.exit(1)
 
 def main() -> int:
     test_cluster_front_door()
+    test_profiled_cluster_front_door()
     test_transactional_failures()
     test_node_preflight_and_launch()
+    test_profile_is_exact_node_lifecycle_identity()
     test_sglang_command_contract()
     test_sglang_worker_verification_contract()
     print("cluster contracts: passed")

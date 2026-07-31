@@ -64,11 +64,15 @@ class CommandBuilder:
         if operation.kind == "serving":
             if operation.recipe is None or operation.action is None:
                 raise ValueError("serving operation is incomplete")
-            command = self.serving(operation.recipe, operation.action)
-            verify = self.serving(operation.recipe, "verify") if operation.action == "start" else None
+            command = self.serving(operation.recipe, operation.action, operation.launch_profile)
+            verify = (
+                self.serving(operation.recipe, "verify", operation.launch_profile)
+                if operation.action == "start"
+                else None
+            )
             cleanup = (
-                self.serving(operation.recipe, "stop"),
-                self.serving(operation.recipe, "status"),
+                self.serving(operation.recipe, "stop", operation.launch_profile),
+                self.serving(operation.recipe, "status", operation.launch_profile),
             ) if operation.action == "start" else ()
             return OperationPlan(command=command, verify=verify, cleanup=cleanup, benchmark_label=None)
 
@@ -82,9 +86,17 @@ class CommandBuilder:
             benchmark_label=f"io.dgx-dashboard.run-id={run_id}",
         )
 
-    def serving(self, recipe: ServeRecipe, action: str, *, lines: int | None = None) -> CommandSpec:
+    def serving(
+        self,
+        recipe: ServeRecipe,
+        action: str,
+        launch_profile: str | None = None,
+        *,
+        lines: int | None = None,
+    ) -> CommandSpec:
         if action not in {"start", "status", "logs", "verify", "stop"}:
             raise ValueError("unsupported serving action")
+        resolved_profile = recipe.resolve_launch_profile(launch_profile)
         argv = [str(self.root / "serve.sh"), recipe.target, recipe.engine, recipe.artifact]
         if action != "start":
             argv.append(action)
@@ -93,6 +105,8 @@ class CommandBuilder:
                 raise ValueError("invalid serving log line count")
             argv.append(str(lines))
         environment = dict(self._base_environment)
+        if resolved_profile is not None:
+            environment["CLUSTER_PROFILE"] = resolved_profile
         if action == "start":
             environment.update({"DETACH": "1", "KEEP": "1", "RESTART_POLICY": "unless-stopped"})
         return CommandSpec(

@@ -11,6 +11,9 @@ from typing import Callable, Iterable
 
 
 _ARTIFACT_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]*\Z")
+_LAUNCH_PROFILE_RE = re.compile(r"[a-z0-9][a-z0-9_-]*\Z")
+_PROFILE_VALUE_RE = re.compile(r"[a-z0-9_]+\Z")
+_PROFILE_FIELDS = ("KV_CACHE_DTYPE", "MAX_MODEL_LEN", "MAX_NUM_SEQS", "MTP_NUM_TOKENS")
 _METADATA_KEYS = (
     "IMAGE",
     "MODEL",
@@ -34,6 +37,24 @@ class CatalogError(RuntimeError):
 
 
 @dataclass(frozen=True)
+class LaunchProfile:
+    name: str
+    kv_cache_dtype: str
+    context_length: int
+    max_sequences: int
+    speculative_tokens: int
+
+    def public(self) -> dict[str, object]:
+        return {
+            "name": self.name,
+            "kv_cache_dtype": self.kv_cache_dtype,
+            "context_length": self.context_length,
+            "max_sequences": self.max_sequences,
+            "speculative_tokens": self.speculative_tokens,
+        }
+
+
+@dataclass(frozen=True)
 class ServeRecipe:
     target: str
     engine: str
@@ -42,19 +63,34 @@ class ServeRecipe:
     served: str
     container_name: str
     package: Path
+    launch_profiles: tuple[LaunchProfile, ...] = ()
+    default_launch_profile: str | None = None
 
     @property
     def key(self) -> tuple[str, str, str]:
         return self.target, self.engine, self.artifact
 
-    def public(self) -> dict[str, str]:
+    def public(self) -> dict[str, object]:
         return {
             "target": self.target,
             "engine": self.engine,
             "artifact": self.artifact,
             "profile": self.profile,
             "served": self.served,
+            "launch_profiles": [profile.public() for profile in self.launch_profiles],
+            "default_launch_profile": self.default_launch_profile,
         }
+
+    def resolve_launch_profile(self, name: object, *, use_default: bool = False) -> str | None:
+        if not self.launch_profiles:
+            if name is not None:
+                raise ValueError("launch_profile is not supported by this recipe")
+            return None
+        if name is None and use_default:
+            name = self.default_launch_profile
+        if not isinstance(name, str) or name not in {profile.name for profile in self.launch_profiles}:
+            raise ValueError("launch_profile is not supported by this recipe")
+        return name
 
 
 RunParser = Callable[..., subprocess.CompletedProcess[bytes]]
@@ -142,6 +178,7 @@ class ServingCatalog:
                 ):
                     continue
                 metadata = self._parse(parser, package / "runtime.env")
+                launch_profiles, default_launch_profile = self._load_launch_profiles(package)
                 recipe = ServeRecipe(
                     target="cluster",
                     engine=engine,
@@ -150,6 +187,8 @@ class ServingCatalog:
                     served=metadata["SERVED"],
                     container_name=metadata["CONTAINER_NAME"],
                     package=package,
+                    launch_profiles=launch_profiles,
+                    default_launch_profile=default_launch_profile,
                 )
                 self._insert(recipes, recipe)
 
@@ -171,6 +210,68 @@ class ServingCatalog:
                 continue
             packages.append(package)
         return sorted(packages, key=lambda path: path.name)
+
+    def _load_launch_profiles(self, package: Path) -> tuple[tuple[LaunchProfile, ...], str | None]:
+        root = package / "profiles"
+        if not root.exists():
+            return (), None
+        if root.is_symlink() or not root.is_dir():
+            raise CatalogError(f"launch profile path is unsafe for recipe {package.name}")
+        default_path = root / "default"
+        try:
+            default = default_path.read_text(encoding="utf-8")
+        except (OSError, UnicodeError) as error:
+            raise CatalogError(f"default launch profile is unreadable for recipe {package.name}") from error
+        if not default.endswith("\n") or default.count("\n") != 1:
+            raise CatalogError(f"default launch profile is invalid for recipe {package.name}")
+        default = default.removesuffix("\n")
+        if _LAUNCH_PROFILE_RE.fullmatch(default) is None:
+            raise CatalogError(f"default launch profile is invalid for recipe {package.name}")
+
+        canonical_root = root.resolve(strict=True)
+        profiles: list[LaunchProfile] = []
+        for candidate in sorted(root.glob("*.env"), key=lambda path: path.name):
+            if (
+                candidate.is_symlink()
+                or not candidate.is_file()
+                or candidate.resolve(strict=True).parent != canonical_root
+                or _LAUNCH_PROFILE_RE.fullmatch(candidate.stem) is None
+            ):
+                raise CatalogError(f"launch profile file is unsafe for recipe {package.name}")
+            try:
+                text = candidate.read_text(encoding="utf-8")
+            except (OSError, UnicodeError) as error:
+                raise CatalogError(f"launch profile is unreadable for recipe {package.name}") from error
+            values: dict[str, str] = {}
+            for line in text.splitlines():
+                key, separator, value = line.partition("=")
+                if separator and key in _PROFILE_FIELDS:
+                    if key in values:
+                        raise CatalogError(f"launch profile contains duplicate {key} for recipe {package.name}")
+                    values[key] = value
+            if tuple(values) != _PROFILE_FIELDS or _PROFILE_VALUE_RE.fullmatch(values["KV_CACHE_DTYPE"]) is None:
+                raise CatalogError(f"launch profile metadata is invalid for recipe {package.name}")
+            profiles.append(
+                LaunchProfile(
+                    name=candidate.stem,
+                    kv_cache_dtype=values["KV_CACHE_DTYPE"],
+                    context_length=self._profile_integer(values["MAX_MODEL_LEN"], "MAX_MODEL_LEN", 1, 10_000_000),
+                    max_sequences=self._profile_integer(values["MAX_NUM_SEQS"], "MAX_NUM_SEQS", 1, 1024),
+                    speculative_tokens=self._profile_integer(values["MTP_NUM_TOKENS"], "MTP_NUM_TOKENS", 0, 32),
+                )
+            )
+        if not profiles or default not in {profile.name for profile in profiles}:
+            raise CatalogError(f"default launch profile does not exist for recipe {package.name}")
+        return tuple(profiles), default
+
+    @staticmethod
+    def _profile_integer(value: str, key: str, minimum: int, maximum: int) -> int:
+        if not value.isascii() or not value.isdecimal():
+            raise CatalogError(f"launch profile {key} must be an integer")
+        result = int(value)
+        if not minimum <= result <= maximum:
+            raise CatalogError(f"launch profile {key} is outside the supported range")
+        return result
 
     def _parse(self, parser: Path, metadata_path: Path) -> dict[str, str]:
         try:

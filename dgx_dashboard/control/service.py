@@ -12,7 +12,7 @@ import time
 from dataclasses import replace
 from typing import Any
 
-from dgx_dashboard.control.catalog import ServingCatalog
+from dgx_dashboard.control.catalog import ServeRecipe, ServingCatalog
 from dgx_dashboard.control.commands import CommandBuilder, CommandSpec
 from dgx_dashboard.control.manager import RunManager
 
@@ -40,28 +40,91 @@ class ControlService:
 
     def serving_status(self) -> dict[str, object]:
         selections = self.manager.latest_serving_recipes()
+        selected_keys: dict[str, tuple[str, str, str, str | None]] = {
+            target: (target, engine, artifact, launch_profile)
+            for target, (engine, artifact, launch_profile) in selections.items()
+        }
+        probe_keys = set(selected_keys.values())
+        for recipe in self.catalog.recipes():
+            for launch_profile in recipe.launch_profiles:
+                probe_keys.add((recipe.target, recipe.engine, recipe.artifact, launch_profile.name))
+
+        results: dict[tuple[str, str, str, str | None], dict[str, Any]] = {}
+        if probe_keys:
+            with concurrent.futures.ThreadPoolExecutor(max_workers=min(8, len(probe_keys))) as executor:
+                futures = {
+                    executor.submit(self._status_one, *key): key
+                    for key in probe_keys
+                }
+                for future, key in futures.items():
+                    try:
+                        results[key] = future.result(timeout=35)
+                    except Exception:
+                        results[key] = {
+                            "target": key[0],
+                            "engine": key[1],
+                            "artifact": key[2],
+                            "launch_profile": key[3],
+                            "state": "error",
+                            "ready": False,
+                            "error": "status_probe_failed",
+                        }
+
         statuses: dict[str, dict[str, Any]] = {}
-        with concurrent.futures.ThreadPoolExecutor(max_workers=min(5, len(self.catalog.targets))) as executor:
-            futures = {
-                executor.submit(self._status_one, target, *selections[target]): target
-                for target in self.catalog.targets
-                if target in selections
-            }
-            for future, target in futures.items():
-                try:
-                    statuses[target] = future.result(timeout=35)
-                except Exception:
-                    statuses[target] = {"target": target, "state": "error", "error": "status_probe_failed"}
         for target in self.catalog.targets:
-            statuses.setdefault(target, {"target": target, "state": "untracked", "error": None})
+            candidates = [result for key, result in results.items() if key[0] == target]
+            running = [result for result in candidates if result.get("state") == "running"]
+            split_profiles = [
+                result
+                for result in candidates
+                if result.get("launch_profile") is not None and result.get("state") == "mixed"
+            ]
+            if len(running) > 1 or split_profiles:
+                conflicting = running + split_profiles
+                statuses[target] = {
+                    "target": target,
+                    "state": "conflict",
+                    "ready": False,
+                    "error": "profile_rank_mismatch" if split_profiles else "multiple_profiles_running",
+                    "running_profiles": [
+                        {
+                            key: result.get(key)
+                            for key in ("engine", "artifact", "launch_profile", "served", "state")
+                        }
+                        for result in sorted(
+                            conflicting,
+                            key=lambda item: (
+                                str(item.get("engine")),
+                                str(item.get("artifact")),
+                                str(item.get("launch_profile")),
+                            ),
+                        )
+                    ],
+                }
+            elif running:
+                statuses[target] = running[0]
+            elif target in selected_keys:
+                statuses[target] = results[selected_keys[target]]
+            else:
+                statuses[target] = {"target": target, "state": "untracked", "error": None}
         return {
             "targets": [statuses[target] for target in self.catalog.targets],
             "reconciliation": self.manager.reconciliation,
         }
 
-    def serving_logs(self, target: str, engine: str, artifact: str, lines: int) -> dict[str, object]:
+    def serving_logs(
+        self,
+        target: str,
+        engine: str,
+        artifact: str,
+        launch_profile: str | None,
+        lines: int,
+    ) -> dict[str, object]:
         recipe = self.catalog.get(target, engine, artifact)
-        command = replace(self.commands.serving(recipe, "logs", lines=lines), timeout=30)
+        command = replace(
+            self.commands.serving(recipe, "logs", launch_profile, lines=lines),
+            timeout=30,
+        )
         returncode, output, truncated = self._run_bounded(command, max_bytes=262_144)
         if returncode != 0:
             raise AdapterError("serving log adapter failed")
@@ -69,17 +132,46 @@ class ControlService:
             "target": target,
             "engine": engine,
             "artifact": artifact,
+            "launch_profile": launch_profile,
             "lines": lines,
             "text": output.decode("utf-8", errors="replace"),
             "truncated": truncated,
         }
 
-    def _status_one(self, target: str, engine: str, artifact: str) -> dict[str, Any]:
+    def _status_one(
+        self,
+        target: str,
+        engine: str,
+        artifact: str,
+        launch_profile: str | None,
+    ) -> dict[str, Any]:
         try:
             recipe = self.catalog.get(target, engine, artifact)
         except KeyError:
-            return {"target": target, "state": "error", "error": "recipe_removed"}
-        command = replace(self.commands.serving(recipe, "status"), timeout=30)
+            return {
+                "target": target,
+                "engine": engine,
+                "artifact": artifact,
+                "launch_profile": launch_profile,
+                "state": "error",
+                "ready": False,
+                "error": "recipe_removed",
+            }
+        try:
+            command = replace(
+                self.commands.serving(recipe, "status", launch_profile),
+                timeout=30,
+            )
+        except ValueError:
+            return {
+                "target": target,
+                "engine": engine,
+                "artifact": artifact,
+                "launch_profile": launch_profile,
+                "state": "error",
+                "ready": False,
+                "error": "profile_removed",
+            }
         returncode, output, truncated = self._run_bounded(command, max_bytes=65_536)
         states = [match.decode("ascii") for match in re.findall(rb"\bstate=([a-z]+)\b", output)]
         endpoints = {
@@ -100,6 +192,7 @@ class ControlService:
             "target": target,
             "engine": engine,
             "artifact": artifact,
+            "launch_profile": launch_profile,
             "served": recipe.served,
             "state": state,
             "ready": state == "running",
