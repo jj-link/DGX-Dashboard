@@ -53,7 +53,7 @@ case "$ENGINE/$ARTIFACT" in
     )
     ;;
   vllm/deepseek_ai_deepseek_v4_flash_dspark_tp2)
-    speculative_config="{\"method\":\"dspark\",\"num_speculative_tokens\":${MTP_NUM_TOKENS:-3},\"draft_sample_method\":\"probabilistic\"}"
+    speculative_config="{\"method\":\"dspark\",\"num_speculative_tokens\":${MTP_NUM_TOKENS:-5},\"draft_sample_method\":\"probabilistic\"}"
     args=(
       /usr/local/bin/vllm serve "$MODEL_PATH"
       --served-model-name "$SERVED"
@@ -67,7 +67,7 @@ case "$ENGINE/$ARTIFACT" in
       --max-model-len "$MAX_MODEL_LEN"
       --max-num-seqs "${MAX_NUM_SEQS:-6}"
       --max-num-batched-tokens "${MAX_NUM_BATCHED_TOKENS:-8192}"
-      --max-cudagraph-capture-size "$(( ${MAX_NUM_SEQS:-6} * (${MTP_NUM_TOKENS:-3} + 1) ))"
+      --max-cudagraph-capture-size "$(( ${MAX_NUM_SEQS:-6} * (${MTP_NUM_TOKENS:-5} + 1) ))"
       --gpu-memory-utilization "${GPU_MEMORY_UTILIZATION:-0.85}"
       --enable-prefix-caching
       --async-scheduling

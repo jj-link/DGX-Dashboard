@@ -62,6 +62,8 @@ case "$ENGINE/$ARTIFACT" in
     MASTER_PORT=25001
     ;;
   vllm/deepseek_ai_deepseek_v4_flash_dspark_tp2)
+    [[ "$IMAGE" == "ghcr.io/anemll/dspark-vllm-gx10@sha256:a83948492cf13df455170fb42885f5ef4db54fefe0feff0f841ecbff464ac9d8" ]] ||
+      fail "official DeepSeek V4 Flash 0731 requires the audited DSpark shared-expert loader image"
     PROFILE_ROOT="$PACKAGE/profiles"
     DEFAULT_PROFILE_FILE="$PROFILE_ROOT/default"
     [[ -f "$DEFAULT_PROFILE_FILE" && ! -L "$DEFAULT_PROFILE_FILE" ]] ||
@@ -433,6 +435,11 @@ for mount in container.get("Mounts", []):
   [[ "$command_line" == *"--nnodes 2"* ]] || fail "container '$CONTAINER' command is missing --nnodes 2"
   [[ "$command_line" == *"--node-rank $RANK"* ]] || fail "container '$CONTAINER' command has the wrong node rank"
   if [[ "$ENGINE" == vllm ]]; then
+    local loader=/usr/local/lib/python3.12/dist-packages/vllm/models/deepseek_v4/nvidia/dspark.py
+    docker exec "$CONTAINER" grep -Fq '("gate_up_proj", "w1", 0)' "$loader" ||
+      fail "container '$CONTAINER' is missing the DSpark shared-expert w1 loader mapping"
+    docker exec "$CONTAINER" grep -Fq '("gate_up_proj", "w3", 1)' "$loader" ||
+      fail "container '$CONTAINER' is missing the DSpark shared-expert w3 loader mapping"
     [[ "$command_line" == *"--master-addr $MASTER_ADDR"* ]] || fail "container '$CONTAINER' command has the wrong master address"
     [[ "$command_line" == *"--master-port $MASTER_PORT"* ]] || fail "container '$CONTAINER' command has the wrong master port"
   else

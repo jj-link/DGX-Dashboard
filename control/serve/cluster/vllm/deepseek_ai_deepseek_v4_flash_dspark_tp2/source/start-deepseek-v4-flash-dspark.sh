@@ -4,7 +4,7 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 ENV_FILE="${ENV_FILE:-$SCRIPT_DIR/.env.dspark}"
 COMPOSE_FILE="${COMPOSE_FILE:-$SCRIPT_DIR/docker-compose.dspark.yml}"
-PROJECT_NAME="${PROJECT_NAME:-deepseek-v4-flash}"
+PROJECT_NAME="${PROJECT_NAME:-deepseek-v4-flash-0731}"
 API_URL="${API_URL:-http://127.0.0.1:8888/v1/models}"
 CHAT_URL="${CHAT_URL:-http://127.0.0.1:8888/v1/chat/completions}"
 WAIT_ATTEMPTS="${WAIT_ATTEMPTS:-100}"
@@ -119,8 +119,8 @@ print_resolved_profile() {
   echo "Resolved DSpark profile:"
   echo "  project: $PROJECT_NAME"
   echo "  image: $DSPARK_VLLM_IMAGE"
-  echo "  model: ${DSPARK_MODEL:-deepseek-ai/DeepSeek-V4-Flash-DSpark}"
-  echo "  served model: ${SERVED_MODEL_NAME:-deepseek-v4-flash-dspark}"
+  echo "  model: ${DSPARK_MODEL:-deepseek-ai/DeepSeek-V4-Flash-0731}"
+  echo "  served model: ${SERVED_MODEL_NAME:-deepseek-v4-flash-0731}"
   echo "  kv cache dtype: ${KV_CACHE_DTYPE:-nvfp4_ds_mla}"
   echo "  max model len: ${MAX_MODEL_LEN:-1000000}"
   echo "  max num seqs: ${MAX_NUM_SEQS:-12}"
@@ -226,13 +226,13 @@ echo "Waiting for DSpark vLLM API..."
 print_initial_startup_logs
 for _ in $(seq 1 "$WAIT_ATTEMPTS"); do
   if curl -fsS --max-time 5 "$API_URL" >/dev/null 2>&1; then
-    echo "DeepSeek V4 Flash DSpark is running: $API_URL"
+    echo "DeepSeek V4 Flash 0731 DSpark is running: $API_URL"
     compose_base 0 "" ps
     remote_compose "docker compose -p '$PROJECT_NAME' --env-file .env.dspark -f docker-compose.dspark.yml ps"
     echo "Running minimal OpenAI-compatible chat request..."
     curl -fsS --max-time 60 "$CHAT_URL" \
       -H "Content-Type: application/json" \
-      -d '{"model":"'"${SERVED_MODEL_NAME:-deepseek-v4-flash-dspark}"'","messages":[{"role":"user","content":"Reply with OK."}],"max_tokens":8,"temperature":0.0}' >/dev/null
+      -d '{"model":"'"${SERVED_MODEL_NAME:-deepseek-v4-flash-0731}"'","messages":[{"role":"user","content":"Reply with OK."}],"max_tokens":8,"temperature":0.0}' >/dev/null
     echo "Minimal chat request succeeded."
     exit 0
   fi

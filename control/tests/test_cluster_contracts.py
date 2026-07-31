@@ -429,7 +429,7 @@ def test_node_preflight_and_launch() -> None:
         )
         assert completed.returncode == 0, completed.stderr
         same_name_environment = dict(replacement_environment)
-        same_name = "inference-cluster-vllm-deepseek-v4-flash-dspark-tp2-rank0"
+        same_name = "inference-cluster-vllm-deepseek-v4-flash-0731-tp2-rank0"
         same_name_environment["PREFLIGHT_REPLACE_CONTAINER"] = same_name
         same_name_environment["FAKE_TARGET_CONTAINER"] = same_name
         completed = run(
@@ -484,6 +484,8 @@ def test_node_preflight_and_launch() -> None:
                 assert "VLLM_DSPARK_CONFIDENCE_THRESHOLD=0.0" in run_arguments
                 assert "KV_CACHE_DTYPE=fp8_ds_mla" in run_arguments
                 assert "CLUSTER_PROFILE=quality" in run_arguments
+                assert any("MODEL_PATH=/models/hub/models--deepseek-ai--DeepSeek-V4-Flash-0731/" in value for value in run_arguments)
+                assert "SERVED=deepseek-v4-flash-0731" in run_arguments
             else:
                 assert "DRAFTER_PATH=" not in run_arguments
                 assert any(value.startswith("DRAFTER_PATH=/models/hub/models--") for value in run_arguments)
@@ -491,7 +493,7 @@ def test_node_preflight_and_launch() -> None:
                 assert "SGLANG_ENABLE_JIT_DEEPGEMM=0" in run_arguments
 
         profile_expectations = {
-            "balanced": ("nvfp4_ds_mla", "1048576", "6", "3"),
+            "balanced": ("nvfp4_ds_mla", "1048576", "6", "5"),
             "throughput": ("nvfp4_ds_mla", "350000", "12", "5"),
         }
         for profile, (kv_cache, context, sequences, mtp_tokens) in profile_expectations.items():
