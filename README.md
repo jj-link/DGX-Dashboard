@@ -100,7 +100,7 @@ curl -u "$DASHBOARD_AUTH_USER:$DASHBOARD_AUTH_PASSWORD" \
   https://jjlink-pc-1.tail90c6fe.ts.net:8443/api/stats
 ```
 
-Open `https://jjlink-pc-1.tail90c6fe.ts.net:8443/` and authenticate. The **Live** tab monitors GPUs and inference endpoints, **Benchmarks** browses indexed results, and **Control** exposes typed operations, bounded logs, history, cancellation, and result links.
+Open `https://jjlink-pc-1.tail90c6fe.ts.net:8443/` and authenticate. The **Live** tab monitors GPUs and inference endpoints, **Benchmarks** browses indexed results, and **Control** exposes typed operations, validated launch-profile choices, bounded logs, history, cancellation, and result links.
 
 ## Model lifecycle CLI
 
@@ -110,11 +110,11 @@ List the validated catalog:
 ./serve.sh --help
 ```
 
-Start a recipe. Extra tokens after the artifact are passed only to the selected engine launcher:
+Start a recipe. Extra tokens after a single-device artifact are passed only to the selected engine launcher. Cluster recipes use typed lifecycle arguments:
 
 ```bash
 ./serve.sh <local|spark1|spark2|spark3> <vllm|sglang> <artifact> [engine args...]
-./serve.sh cluster <vllm|sglang> <artifact> [engine args...]
+./serve.sh cluster <vllm|sglang> <artifact> [start|status|logs|verify|stop] [profile] [action args...]
 ```
 
 Read or mutate an exact recipe-owned service:
@@ -127,6 +127,27 @@ Read or mutate an exact recipe-owned service:
 ```
 
 Single-device services bind the workstation model to loopback and Spark models to each node's Tailscale address. The two-node cluster binds its head API to Spark 2's Tailscale address on port `8888`; Spark 3 remains headless. Cluster lifecycle actions operate on both exact rank containers and verify two-way tensor parallelism plus RoCE/NCCL topology.
+
+The DeepSeek V4 Flash DSpark cluster recipe has three validated launch profiles:
+
+| Profile | KV cache | Context | Sequences | Speculation |
+|---|---|---:|---:|---:|
+| `quality` (default) | FP8 DS-MLA | 1,048,576 | 6 | MTP3 |
+| `balanced` | NVFP4 DS-MLA | 1,048,576 | 6 | MTP3 |
+| `throughput` | NVFP4 DS-MLA | 350,000 | 12 | MTP5 |
+
+Pass the profile after every lifecycle action; omitting it selects the tracked `quality` default:
+
+```bash
+artifact=deepseek_ai_deepseek_v4_flash_dspark_tp2
+./serve.sh cluster vllm "$artifact" start throughput
+./serve.sh cluster vllm "$artifact" status throughput
+./serve.sh cluster vllm "$artifact" logs throughput 250
+./serve.sh cluster vllm "$artifact" verify throughput
+./serve.sh cluster vllm "$artifact" stop throughput
+```
+
+Artifact plus launch profile is the exact lifecycle identity. Status probes all three profiles independently, even for containers started outside the dashboard. A split-rank or multiple-profile condition is reported as a conflict and blocks lifecycle mutations. In the **Control** tab, selecting this DeepSeek artifact reveals the profile dropdown and its KV-cache, context, sequence, and speculation settings.
 
 Starts never replace an occupied target implicitly. Stop the current exact recipe first. Container, image, network, port, model, and recipe identity checks fail closed rather than touching an unknown service.
 
@@ -171,6 +192,7 @@ Read routes:
 - `GET /api/benchmarks`
 - `GET /api/serving`
 - `GET /api/control/catalog`
+- `GET /api/serving/<target>/<engine>/<artifact>/logs?launch_profile=<name>&lines=N`
 - `GET /api/runs?limit=N`
 - `GET /api/runs/<uuid>`
 - `GET /api/runs/<uuid>/log?offset=N&limit=N`
@@ -181,7 +203,7 @@ Mutation routes:
 - `POST /api/runs` — typed serving or benchmark request
 - `POST /api/runs/<uuid>/cancel`
 
-Run metadata never exposes credentials, PIDs, argv, or environments. Logs use capped byte-cursor reads. Metadata is persisted atomically; on restart, nonterminal serving runs are reconciled against exact service state, benchmark runs become `interrupted`, exact labeled benchmark containers are removed, and unrelated containers are left untouched. Terminal history remains readable if a serving recipe is later removed from the active catalog; a nonterminal record for a retired recipe becomes `interrupted` without relaunching it.
+Run metadata never exposes credentials, PIDs, argv, or environments. A profiled serving request must include its validated `launch_profile`; unprofiled recipes use `null`. Logs use capped byte-cursor reads. Metadata is persisted atomically; on restart, nonterminal serving runs are reconciled against exact artifact-and-profile service state, benchmark runs become `interrupted`, exact labeled benchmark containers are removed, and unrelated containers are left untouched. Terminal history remains readable if a serving recipe is later removed from the active catalog; historical DeepSeek records without a profile retain the former `quality` behavior.
 
 Resource leases prevent overlapping mutations on the same target. `cluster` conflicts with individual `spark2` and `spark3` mutations. Only one benchmark worker may run at a time.
 
