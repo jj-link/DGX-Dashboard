@@ -207,7 +207,7 @@ Run metadata never exposes credentials, PIDs, argv, or environments. A profiled 
 
 Resource leases prevent overlapping mutations on the same target. `cluster` conflicts with individual `spark2` and `spark3` mutations. Only one benchmark worker may run at a time.
 
-Completed dashboard benchmark runs are merged into the Benchmarks tab's Oneshot table from the incremental result index. Each dynamic row shows its target, start timestamp, and short run ID; reopening the tab fetches current results instead of retaining an earlier page-local snapshot.
+Completed language summaries from dashboard benchmark runs are merged into the Benchmarks tab's Oneshot table. Each dynamic row shows its target, start timestamp, reasoning mode, and short run ID; reopening the tab fetches current results instead of retaining an earlier page-local snapshot.
 
 Control startup validates global authentication, binding, repository, and durable-storage invariants without requiring every target to be online. Each submitted mutation then checks only its own infrastructure: local operations require workstation Docker and the expected GPU, remote operations require SSH to that Spark, and `cluster` requires both Spark 2 and Spark 3; benchmarks also require workstation Docker. An unavailable dependency returns HTTP `503` with code `target_unavailable` before a run ID, resource lease, or durable record is created. Healthy targets remain operable while another target is offline.
 

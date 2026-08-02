@@ -50,6 +50,7 @@ function renderOneshotModel(entry) {
   const details = [
     entry.target,
     entry.started,
+    entry.reasoning ? `reasoning ${entry.reasoning}` : '',
     entry.run_id ? entry.run_id.slice(0, 8) : '',
   ].filter(Boolean);
   const detailHtml = details.length
