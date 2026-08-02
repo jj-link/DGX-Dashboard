@@ -6,7 +6,12 @@ import json
 import os
 from pathlib import Path
 
-from dgx_dashboard.benchmarks.results import BenchmarkResults, ResultIndex, parse_summary
+from dgx_dashboard.benchmarks.results import (
+    INDEX_VERSION,
+    BenchmarkResults,
+    ResultIndex,
+    parse_summary,
+)
 from dgx_dashboard.config import BenchmarkSettings
 
 
@@ -86,6 +91,37 @@ def test_result_index_parses_only_new_or_changed_summaries(tmp_path):
 
     reloaded = ResultIndex(results, index_path, parser=must_not_parse)
     assert reloaded.refresh() == changed
+
+
+def test_result_index_rebuilds_prior_schema_for_language_metadata(tmp_path):
+    results = tmp_path / "benchmark-results"
+    results.mkdir()
+    summary_path = results / "model-a-local-python-oneshot-20260725-140000.json"
+    write_summary(summary_path)
+    stat = summary_path.stat()
+    index_path = tmp_path / "result-index.json"
+    index_path.write_text(
+        json.dumps(
+            {
+                "version": INDEX_VERSION - 1,
+                "files": {
+                    summary_path.name: {
+                        "mtime_ns": stat.st_mtime_ns,
+                        "size": stat.st_size,
+                        "summary": {"language": "unknown"},
+                    }
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    summaries = ResultIndex(results, index_path).refresh()
+
+    assert summaries[0]["language"] == "python"
+    assert summaries[0]["complete"] is True
+    persisted = json.loads(index_path.read_text(encoding="utf-8"))
+    assert persisted["version"] == INDEX_VERSION
 
 
 def test_result_index_removes_deleted_summary(tmp_path):
