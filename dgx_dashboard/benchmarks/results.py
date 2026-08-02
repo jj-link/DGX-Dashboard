@@ -16,11 +16,12 @@ from typing import Callable, Iterator
 from dgx_dashboard.config import BenchmarkSettings
 
 
-INDEX_VERSION = 2
+INDEX_VERSION = 3
 BENCHMARK_CACHE_TTL = 300
 _SUMMARY_NAME = re.compile(r".*-oneshot-.*\.json\Z")
 _TIMESTAMP = re.compile(r"(\d{8}-\d{6})(?:\.json)?\Z")
 _LANGUAGES = ("python", "javascript", "go", "rust", "cpp", "java")
+_LANGUAGE_SET = frozenset(_LANGUAGES)
 
 
 def _timestamp_from_name(name: str) -> str:
@@ -103,6 +104,10 @@ def parse_summary(path: Path) -> dict[str, object] | None:
     metadata = data.get("meta")
     if not isinstance(metadata, dict):
         metadata = {}
+    num_tests = metadata.get("num_tests")
+    if not isinstance(num_tests, int) or isinstance(num_tests, bool):
+        num_tests = None
+    keywords = _safe_string(metadata.get("keywords"))
     pass_rate = data.get("pass_rate")
     complete = (
         data.get("passed") == passed
@@ -123,6 +128,8 @@ def parse_summary(path: Path) -> dict[str, object] | None:
         "complete": complete,
         "quant": _safe_string(metadata.get("quant")),
         "reasoning": _safe_string(metadata.get("reasoning")),
+        "num_tests": num_tests,
+        "keywords": keywords,
         "passed": passed,
         "total": len(results),
         "prompt_tokens": prompt_tokens,
@@ -305,7 +312,7 @@ class ResultIndex:
 
     @staticmethod
     def oneshot_run_rows(summaries: list[dict[str, object]]) -> list[dict[str, object]]:
-        """Aggregate completed per-language summaries into one row per dashboard run."""
+        """Aggregate only full, unsampled six-language dashboard runs."""
 
         grouped: dict[str, list[dict[str, object]]] = {}
         for summary in summaries:
@@ -315,7 +322,9 @@ class ResultIndex:
                 summary.get("kind") != "oneshot"
                 or summary.get("complete") is not True
                 or not run_id
-                or language not in _LANGUAGES
+                or language not in _LANGUAGE_SET
+                or summary.get("num_tests") != -1
+                or bool(_safe_string(summary.get("keywords")).strip())
             ):
                 continue
             grouped.setdefault(run_id, []).append(summary)
@@ -330,6 +339,9 @@ class ResultIndex:
                     previous.get("started")
                 ):
                     latest_by_language[language] = summary
+
+            if frozenset(latest_by_language) != _LANGUAGE_SET:
+                continue
 
             per_language: dict[str, dict[str, object]] = {}
             passed = 0

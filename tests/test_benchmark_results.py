@@ -18,6 +18,8 @@ from dgx_dashboard.config import BenchmarkSettings
 def write_summary(
     path: Path,
     *,
+    num_tests: int = -1,
+    keywords: str = "",
     passed: bool = True,
     lang: str = "python",
     run_id: str = "12345678-1234-4abc-8def-1234567890ab",
@@ -27,11 +29,16 @@ def write_summary(
     payload = {
         "alias": "model-a",
         "served": "served-a",
+        "meta": {
+            "quant": "FP8",
+            "reasoning": "disabled",
+            "num_tests": num_tests,
+            "keywords": keywords,
+        },
         "target": "spark2",
         "run_id": run_id,
         "lang": lang,
         "started": started,
-        "meta": {"quant": "FP8", "reasoning": "disabled"},
         "results": [
             {
                 "ok": passed,
@@ -78,6 +85,8 @@ def test_result_index_parses_only_new_or_changed_summaries(tmp_path):
     assert first[0]["language"] == "python"
     assert first[0]["complete"] is True
 
+    assert first[0]["num_tests"] == -1
+    assert first[0]["keywords"] == ""
     previous = summary_path.stat().st_mtime_ns
     write_summary(summary_path, passed=False)
     os.utime(summary_path, ns=(previous + 1_000_000_000, previous + 1_000_000_000))
@@ -193,31 +202,48 @@ def test_benchmark_results_preserves_legacy_payload_keys(tmp_path):
     }
 
 
-def test_completed_dashboard_run_is_added_to_oneshot_table(tmp_path):
+def test_only_full_unsampled_dashboard_run_is_added_to_oneshot_table(tmp_path):
     results = tmp_path / "benchmark-results"
     results.mkdir()
+    languages = ("python", "javascript", "go", "rust", "cpp", "java")
     run_id = "12345678-1234-4abc-8def-1234567890ab"
+    for index, language in enumerate(languages):
+        write_summary(
+            results / f"model-a-spark2-{run_id}-{language}-oneshot-20260725-14{index:04d}.json",
+            passed=language != "cpp",
+            run_id=run_id,
+            lang=language,
+            started=f"20260725-14{index:04d}",
+        )
+
+    partial_run_id = "87654321-4321-4cba-8fed-0987654321ab"
     write_summary(
-        results / f"model-a-spark2-{run_id}-python-oneshot-20260725-140000.json",
-        run_id=run_id,
+        results / f"model-a-local-{partial_run_id}-python-oneshot-20260725-150000.json",
+        run_id=partial_run_id,
         lang="python",
-        started="20260725-140000",
-    )
-    write_summary(
-        results / f"model-a-spark2-{run_id}-cpp-oneshot-20260725-140100.json",
-        passed=False,
-        run_id=run_id,
-        lang="cpp",
-        started="20260725-140100",
-    )
-    incomplete_run_id = "87654321-4321-4cba-8fed-0987654321ab"
-    write_summary(
-        results / f"model-a-spark2-{incomplete_run_id}-go-oneshot-20260725-150000.json",
-        run_id=incomplete_run_id,
-        lang="go",
         started="20260725-150000",
-        complete=False,
     )
+
+    sampled_run_id = "11111111-2222-4aaa-8bbb-333333333333"
+    filtered_run_id = "44444444-5555-4aaa-8bbb-666666666666"
+    for index, language in enumerate(languages):
+        write_summary(
+            results
+            / f"model-a-local-{sampled_run_id}-{language}-oneshot-20260725-16{index:04d}.json",
+            run_id=sampled_run_id,
+            lang=language,
+            started=f"20260725-16{index:04d}",
+            num_tests=1,
+        )
+        write_summary(
+            results
+            / f"model-a-local-{filtered_run_id}-{language}-oneshot-20260725-17{index:04d}.json",
+            run_id=filtered_run_id,
+            lang=language,
+            started=f"20260725-17{index:04d}",
+            keywords="array",
+        )
+
     static = tmp_path / "benchmark_static.json"
     static.write_text(
         json.dumps(
@@ -247,9 +273,13 @@ def test_completed_dashboard_run_is_added_to_oneshot_table(tmp_path):
             "quant": "FP8",
             "per_lang": {
                 "python": {"ok": 1, "total": 1, "pct": 100.0},
+                "javascript": {"ok": 1, "total": 1, "pct": 100.0},
+                "go": {"ok": 1, "total": 1, "pct": 100.0},
+                "rust": {"ok": 1, "total": 1, "pct": 100.0},
                 "cpp": {"ok": 0, "total": 1, "pct": 0.0},
+                "java": {"ok": 1, "total": 1, "pct": 100.0},
             },
-            "overall": 50.0,
+            "overall": 83.3,
             "run_id": run_id,
             "target": "spark2",
             "started": "20260725-140000",
