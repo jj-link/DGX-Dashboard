@@ -377,8 +377,8 @@ def main():
                     help="Tensor parallel size")
     ap.add_argument("--reasoning", default="disabled",
                     help="Reasoning mode: disabled, enabled (default: disabled)")
-    ap.add_argument("--reasoning-effort", choices=("low", "medium", "high"),
-                    help="Model reasoning effort passed through chat_template_kwargs")
+    ap.add_argument("--reasoning-effort", choices=("high", "max"),
+                    help="DeepSeek reasoning effort passed through chat_template_kwargs (high or max)")
     ap.add_argument("--engine-version", default=None,
                     help="Exact inference-engine version or build identifier")
     ap.add_argument("--runtime-image", default=None,

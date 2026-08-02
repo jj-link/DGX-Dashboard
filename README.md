@@ -173,7 +173,7 @@ The CLI discovers the served model from `/v1/models`; there is no separate alias
 --test-timeout SEC
 --concurrency N
 --reasoning VALUE
---reasoning-effort {low,medium,high}
+--reasoning-effort {high,max}
 --engine-version VALUE
 --runtime-image VALUE
 --runtime-image-digest VALUE

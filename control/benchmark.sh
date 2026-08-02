@@ -32,7 +32,7 @@ oneshot args:
   --kv-cache-type VALUE         --spec-decode VALUE
   --hardware VALUE              --context-length N
   --tp-size N                   --reasoning VALUE
-  --reasoning-effort {low,medium,high}
+  --reasoning-effort {high,max}
   --engine-version VALUE        --runtime-image VALUE
   --runtime-image-digest VALUE  --model-source VALUE
   --model-revision VALUE

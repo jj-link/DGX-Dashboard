@@ -238,8 +238,8 @@ def _validate_benchmark(payload: dict[str, Any], catalog: ServingCatalog) -> Ope
         options["reasoning"] = reasoning
     if "reasoning_effort" in raw_options:
         effort = raw_options["reasoning_effort"]
-        if effort is not None and effort not in {"low", "medium", "high"}:
-            raise RequestValidationError("options.reasoning_effort must be low, medium, high, or null")
+        if effort is not None and effort not in {"high", "max"}:
+            raise RequestValidationError("options.reasoning_effort must be high, max, or null")
         options["reasoning_effort"] = effort
 
     public = {

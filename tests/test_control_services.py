@@ -380,6 +380,19 @@ def test_request_validation_rejects_bool_numeric_and_arbitrary_surface(tmp_path)
         validate_operation({**base, "options": {"keywords": ["x,y"]}}, catalog)
 
 
+def test_benchmark_reasoning_effort_accepts_only_model_levels(tmp_path):
+    catalog = _RequestCatalog(tmp_path)
+    base = {"kind": "benchmark", "benchmark": "oneshot", "target": "local"}
+    for effort in (None, "high", "max"):
+        validated = validate_operation(
+            {**base, "options": {"reasoning_effort": effort}}, catalog
+        )
+        assert validated.public["options"]["reasoning_effort"] == effort
+    for effort in ("low", "medium"):
+        with pytest.raises(RequestValidationError, match="must be high, max, or null"):
+            validate_operation({**base, "options": {"reasoning_effort": effort}}, catalog)
+
+
 def test_persisted_requests_allow_only_well_formed_retired_recipes(tmp_path):
     catalog = _RequestCatalog(tmp_path)
     request = {

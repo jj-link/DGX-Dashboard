@@ -15,4 +15,5 @@
 - Fix: keep authenticated controls available for healthy targets when another Spark is offline, while rejecting only the affected target before durable run creation.
 - Fix: add completed dashboard oneshot runs to the Benchmarks table and refresh benchmark data whenever the tab is opened.
 - Fix: exclude single-language, `--num-tests`, and keyword-filtered runs from the comparative Oneshot table.
+- Fix: offer only the DeepSeek reasoning levels actually supported (`high`, `max`); `low`/`medium` silently collapsed to `high` and `max` was unreachable.
 - Change: verify start, model response, stop, and cleanup through the canonical repository on `local`, all three Spark nodes, and the Spark 2 + Spark 3 cluster.
