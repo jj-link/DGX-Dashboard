@@ -16,6 +16,7 @@ from dgx_dashboard.control.manager import (
     RunNotFound,
     RunTransitionConflict,
 )
+from dgx_dashboard.control.preflight import TargetUnavailable
 from dgx_dashboard.control.requests import (
     RequestValidationError,
     UnknownRecipeError,
@@ -207,6 +208,13 @@ def create_blueprint(
             raise ApiProblem(404, "recipe_not_found", str(error)) from error
         except RequestValidationError as error:
             raise ApiProblem(400, "invalid_request", str(error)) from error
+        except TargetUnavailable as error:
+            raise ApiProblem(
+                503,
+                "target_unavailable",
+                "target infrastructure is unavailable",
+                target=error.target,
+            ) from error
         except RunConflict as error:
             raise ApiProblem(
                 409,

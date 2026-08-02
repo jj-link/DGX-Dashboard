@@ -81,13 +81,15 @@ def create_app(
             resolved_settings.control,
             resolved_settings.benchmarks,
         )
-        ControlPreflight(resolved_settings, catalog, command_builder).validate()
+        preflight = ControlPreflight(resolved_settings, catalog, command_builder)
+        preflight.validate()
         manager = RunManager(
             resolved_settings.control.state_dir,
             catalog,
             command_builder,
             retention=resolved_settings.control.retention,
             result_resolver=benchmarks.run_links,
+            operation_preflight=preflight.validate_operation,
         )
         control = ControlService(catalog, command_builder, manager)
 

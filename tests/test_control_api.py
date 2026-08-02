@@ -10,6 +10,7 @@ from types import SimpleNamespace
 from dgx_dashboard import create_app
 from dgx_dashboard.control.catalog import ServeRecipe
 from dgx_dashboard.control.manager import RunConflict, RunNotFound, RunTransitionConflict
+from dgx_dashboard.control.preflight import TargetUnavailable
 
 
 class _Monitoring:
@@ -59,8 +60,11 @@ class _Manager:
     def __init__(self) -> None:
         self.created = []
         self.conflict = False
+        self.unavailable_targets = set()
 
     def submit(self, operation):
+        if operation.target in self.unavailable_targets:
+            raise TargetUnavailable(operation.target)
         if self.conflict:
             raise RunConflict("00000000-0000-4000-8000-000000000001")
         self.created.append(operation)
@@ -203,6 +207,20 @@ def test_strict_serving_request_returns_202_and_location(settings, tmp_path):
     }
     assert control.manager.created[0].recipe == control.catalog.recipe
     assert "Access-Control-Allow-Origin" not in response.headers
+
+def test_unavailable_target_fails_before_run_creation(settings, tmp_path):
+    client, control = _client(settings, tmp_path)
+    control.manager.unavailable_targets.add("local")
+
+    response = client.post("/api/runs", json=_serving_request(), headers=_mutation_headers())
+
+    assert response.status_code == 503
+    assert response.get_json() == {
+        "code": "target_unavailable",
+        "error": "target infrastructure is unavailable",
+        "target": "local",
+    }
+    assert control.manager.created == []
 
 
 def test_unknown_fields_recipe_and_resource_conflict_are_stable(settings, tmp_path):

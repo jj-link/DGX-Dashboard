@@ -110,6 +110,7 @@ class _ActiveRun:
 PopenFactory = Callable[..., Any]
 RunFactory = Callable[..., subprocess.CompletedProcess[bytes]]
 ResultResolver = Callable[[str], list[dict[str, str]]]
+OperationPreflight = Callable[[OperationRequest], None]
 Terminator = Callable[[Any, float], None]
 
 
@@ -127,6 +128,7 @@ class RunManager:
         run_factory: RunFactory = subprocess.run,
         terminate_process: Terminator | None = None,
         result_resolver: ResultResolver | None = None,
+        operation_preflight: OperationPreflight | None = None,
         cancel_grace: float = 10.0,
     ) -> None:
         self.state_dir = state_dir.resolve(strict=False)
@@ -137,6 +139,7 @@ class RunManager:
         self._run = run_factory
         self._terminate = terminate_process or self._terminate_group
         self._result_resolver = result_resolver or (lambda _run_id: [])
+        self._operation_preflight = operation_preflight
         self._cancel_grace = cancel_grace
         self._lock = threading.RLock()
         self._records: dict[str, dict[str, Any]] = {}
@@ -155,6 +158,8 @@ class RunManager:
             return [dict(item) for item in self._reconciliation[-100:]]
 
     def submit(self, operation: OperationRequest) -> dict[str, Any]:
+        if self._operation_preflight is not None:
+            self._operation_preflight(operation)
         run_id = str(uuid.uuid4())
         now = self._timestamp()
         record = {

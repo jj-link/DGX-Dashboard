@@ -6,13 +6,15 @@ import os
 import subprocess
 from dataclasses import replace
 from pathlib import Path
+from types import MappingProxyType
 
 import pytest
 
 from dgx_dashboard.control.catalog import LaunchProfile, ServeRecipe, ServingCatalog
 from dgx_dashboard.control.commands import CommandBuilder
-from dgx_dashboard.control.preflight import ControlPreflight, PreflightError
+from dgx_dashboard.control.preflight import ControlPreflight, PreflightError, TargetUnavailable
 from dgx_dashboard.control.requests import (
+    OperationRequest,
     RequestValidationError,
     validate_operation,
     validate_persisted_operation,
@@ -405,15 +407,19 @@ class _PreflightCatalog:
 
 
 class _PreflightRunner:
-    def __init__(self) -> None:
+    def __init__(self, unavailable_hosts=()) -> None:
         self.calls = []
+        self.unavailable_hosts = frozenset(unavailable_hosts)
 
     def __call__(self, argv, **_kwargs):
         self.calls.append(tuple(argv))
         stdout = b""
+        returncode = 0
         if argv[0] == "nvidia-smi":
             stdout = b"NVIDIA RTX PRO 6000 Blackwell Workstation Edition\n"
-        return subprocess.CompletedProcess(argv, 0, stdout=stdout, stderr=b"")
+        elif argv[0] == "ssh" and argv[-2] in self.unavailable_hosts:
+            returncode = 255
+        return subprocess.CompletedProcess(argv, returncode, stdout=stdout, stderr=b"")
 
 
 def _preflight_settings(settings, tmp_path, targets=("local",)):
@@ -437,6 +443,13 @@ def _preflight_settings(settings, tmp_path, targets=("local",)):
             auth_user="operator",
             auth_password="secret",
         ),
+        remote_hosts=MappingProxyType(
+            {
+                "spark1": "test-spark1",
+                "spark2": "test-spark2",
+                "spark3": "test-spark3",
+            }
+        ),
         benchmarks=replace(settings.benchmarks, results_dir=results),
         control=replace(
             settings.control,
@@ -450,21 +463,86 @@ def _preflight_settings(settings, tmp_path, targets=("local",)):
     )
 
 
-def test_enabled_preflight_checks_gpu_and_hardened_remote_ssh(settings, tmp_path):
-    configured = _preflight_settings(settings, tmp_path, targets=("local", "spark2"))
+def _preflight_operation(target, kind="serving"):
+    return OperationRequest(
+        kind=kind,
+        target=target,
+        resources=frozenset(),
+        public={},
+    )
+
+
+def test_enabled_preflight_does_not_probe_target_hardware(settings, tmp_path):
+    configured = _preflight_settings(
+        settings,
+        tmp_path,
+        targets=("local", "spark1", "spark2", "spark3", "cluster"),
+    )
+    catalog = _PreflightCatalog(configured.control.targets)
+    commands = CommandBuilder(configured.control, configured.benchmarks)
+    runner = _PreflightRunner(unavailable_hosts={"test-spark1"})
+
+    ControlPreflight(configured, catalog, commands, runner=runner).validate()
+
+    assert not {"docker", "nvidia-smi", "ssh"} & {call[0] for call in runner.calls}
+
+
+def test_operation_preflight_checks_only_selected_target(settings, tmp_path):
+    configured = _preflight_settings(
+        settings,
+        tmp_path,
+        targets=("local", "spark1", "spark2", "spark3", "cluster"),
+    )
     catalog = _PreflightCatalog(configured.control.targets)
     commands = CommandBuilder(configured.control, configured.benchmarks)
     runner = _PreflightRunner()
+    preflight = ControlPreflight(configured, catalog, commands, runner=runner)
 
-    ControlPreflight(configured, catalog, commands, runner=runner).validate()
-    assert any(call[0] == "nvidia-smi" for call in runner.calls)
-    ssh = next(call for call in runner.calls if call[0] == "ssh")
+    preflight.validate_operation(_preflight_operation("spark2"))
+
+    assert len(runner.calls) == 1
+    ssh = runner.calls[0]
     rendered = " ".join(ssh)
+    assert ssh[-2:] == ("test-spark2", "exec true")
     assert "StrictHostKeyChecking=yes" in rendered
     assert "ForwardAgent=no" in rendered
     assert "ClearAllForwardings=yes" in rendered
     assert "RequestTTY=no" in rendered
-    assert ssh[-2:] == ("spark2-ts", "exec true")
+
+    local_runner = _PreflightRunner()
+    ControlPreflight(configured, catalog, commands, runner=local_runner).validate_operation(
+        _preflight_operation("local")
+    )
+    assert [call[0] for call in local_runner.calls] == ["docker", "nvidia-smi"]
+
+    cluster_runner = _PreflightRunner()
+    ControlPreflight(configured, catalog, commands, runner=cluster_runner).validate_operation(
+        _preflight_operation("cluster", kind="benchmark")
+    )
+    assert [call[0] for call in cluster_runner.calls] == ["docker", "ssh", "ssh"]
+    assert {call[-2] for call in cluster_runner.calls[1:]} == {"test-spark2", "test-spark3"}
+
+
+def test_operation_preflight_rejects_only_unavailable_target(settings, tmp_path):
+    configured = _preflight_settings(
+        settings,
+        tmp_path,
+        targets=("spark1", "spark2"),
+    )
+    catalog = _PreflightCatalog(configured.control.targets)
+    commands = CommandBuilder(configured.control, configured.benchmarks)
+    preflight = ControlPreflight(
+        configured,
+        catalog,
+        commands,
+        runner=_PreflightRunner(unavailable_hosts={"test-spark1"}),
+    )
+
+    with pytest.raises(TargetUnavailable) as unavailable:
+        preflight.validate_operation(_preflight_operation("spark1"))
+    assert unavailable.value.target == "spark1"
+
+    preflight.validate_operation(_preflight_operation("spark2"))
 
 
 def test_enabled_preflight_rejects_wildcard_binding(settings, tmp_path):

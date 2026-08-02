@@ -3,7 +3,7 @@
 from dgx_dashboard.control.catalog import CatalogError, ServeRecipe, ServingCatalog
 from dgx_dashboard.control.commands import CommandBuilder
 from dgx_dashboard.control.manager import RunManager
-from dgx_dashboard.control.preflight import ControlPreflight, PreflightError
+from dgx_dashboard.control.preflight import ControlPreflight, PreflightError, TargetUnavailable
 from dgx_dashboard.control.service import ControlService
 
 __all__ = [
@@ -12,6 +12,7 @@ __all__ = [
     "ControlPreflight",
     "ControlService",
     "PreflightError",
+    "TargetUnavailable",
     "RunManager",
     "ServeRecipe",
     "ServingCatalog",

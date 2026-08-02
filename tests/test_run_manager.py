@@ -16,6 +16,7 @@ from dgx_dashboard.config import BenchmarkSettings, ControlSettings
 from dgx_dashboard.control.catalog import LaunchProfile, ServeRecipe
 from dgx_dashboard.control.commands import CommandBuilder
 from dgx_dashboard.control.manager import RunConflict, RunManager
+from dgx_dashboard.control.preflight import TargetUnavailable
 from dgx_dashboard.control.requests import OperationRequest
 
 
@@ -140,6 +141,31 @@ class _DockerCleanup:
     def __call__(self, argv, **_kwargs):
         self.calls.append(tuple(argv))
         return subprocess.CompletedProcess(argv, 0, stdout=self.container_ids)
+
+
+def test_operation_preflight_rejects_before_durable_state(tmp_path):
+    _root, state, commands, catalog = _make_builder(tmp_path)
+    checked = []
+
+    def reject(operation):
+        checked.append(operation.target)
+        raise TargetUnavailable(operation.target)
+
+    manager = RunManager(
+        state,
+        catalog,
+        commands,
+        retention=20,
+        operation_preflight=reject,
+    )
+
+    with pytest.raises(TargetUnavailable) as unavailable:
+        manager.submit(_serving_operation(catalog, "spark2"))
+
+    assert unavailable.value.target == "spark2"
+    assert checked == ["spark2"]
+    assert manager.list(10) == []
+    assert list(state.iterdir()) == []
 
 
 def test_success_persists_safe_metadata_direct_log_and_result_links(tmp_path, monkeypatch):

@@ -12,11 +12,27 @@ from urllib.parse import urlsplit
 from dgx_dashboard.config import DashboardSettings
 from dgx_dashboard.control.catalog import ServingCatalog
 from dgx_dashboard.control.commands import CommandBuilder
+from dgx_dashboard.control.requests import OperationRequest
 
 
 class PreflightError(RuntimeError):
     """Raised when control-enabled startup is unsafe."""
 
+
+class TargetUnavailable(RuntimeError):
+    """Raised when an operation's target infrastructure cannot be reached."""
+
+    def __init__(self, target: str) -> None:
+        super().__init__(f"{target} is unavailable")
+        self.target = target
+
+
+_REMOTE_TARGET_MEMBERS = {
+    "spark1": ("spark1",),
+    "spark2": ("spark2",),
+    "spark3": ("spark3",),
+    "cluster": ("spark2", "spark3"),
+}
 
 class ControlPreflight:
     def __init__(
@@ -67,24 +83,47 @@ class ControlPreflight:
         status = self._check(["git", "status", "--porcelain", "--untracked-files=normal"], "the controller Git status is unavailable")
         if status.stdout:
             raise PreflightError("the controller Git checkout is dirty")
+        self._validate_target_configuration()
+
+    def validate_operation(self, operation: OperationRequest) -> None:
+        """Fail closed against only the infrastructure used by one operation."""
+        try:
+            if operation.kind == "benchmark" or operation.target == "local":
+                self._validate_docker()
+            if operation.target == "local":
+                self._validate_local_gpu()
+            else:
+                self._validate_remote_target(operation.target)
+        except PreflightError as error:
+            raise TargetUnavailable(operation.target) from error
+
+    def _validate_target_configuration(self) -> None:
+        for target in self.catalog.targets:
+            for member in _REMOTE_TARGET_MEMBERS.get(target, ()):
+                if member not in self.settings.remote_hosts:
+                    raise PreflightError(f"SSH host for {member} is not configured")
+
+    def _validate_docker(self) -> None:
         self._check(["docker", "info"], "Docker access is unavailable", timeout=15)
 
-        if "local" in self.catalog.targets:
-            gpu = self._check(
-                ["nvidia-smi", "--query-gpu=name", "--format=csv,noheader"],
-                "the workstation GPU is unavailable",
-            )
-            if gpu.stdout.decode("utf-8", errors="replace").strip() != "NVIDIA RTX PRO 6000 Blackwell Workstation Edition":
-                raise PreflightError("the workstation GPU identity is unexpected")
+    def _validate_local_gpu(self) -> None:
+        gpu = self._check(
+            ["nvidia-smi", "--query-gpu=name", "--format=csv,noheader"],
+            "the workstation GPU is unavailable",
+        )
+        if gpu.stdout.decode("utf-8", errors="replace").strip() != (
+            "NVIDIA RTX PRO 6000 Blackwell Workstation Edition"
+        ):
+            raise PreflightError("the workstation GPU identity is unexpected")
 
-        remote_hosts: set[str] = set()
-        if "spark1" in self.catalog.targets:
-            remote_hosts.add("spark1-ts")
-        if "spark2" in self.catalog.targets or "cluster" in self.catalog.targets:
-            remote_hosts.add("spark2-ts")
-        if "spark3" in self.catalog.targets or "cluster" in self.catalog.targets:
-            remote_hosts.add("spark3-ts")
-        for host in sorted(remote_hosts):
+    def _validate_remote_target(self, target: str) -> None:
+        members = _REMOTE_TARGET_MEMBERS.get(target)
+        if members is None:
+            raise PreflightError("the operation target is unsupported")
+        for member in members:
+            host = self.settings.remote_hosts.get(member)
+            if host is None:
+                raise PreflightError(f"SSH host for {member} is not configured")
             self._check(
                 [
                     "ssh",
@@ -100,14 +139,14 @@ class ControlPreflight:
                     "-o",
                     "RequestTTY=no",
                     "-o",
-                    "ConnectTimeout=20",
+                    "ConnectTimeout=5",
                     "-o",
-                    "ConnectionAttempts=3",
+                    "ConnectionAttempts=1",
                     host,
                     "exec true",
                 ],
                 f"SSH preflight failed for {host}",
-                timeout=30,
+                timeout=8,
             )
 
     def _validate_binding(self) -> None:
