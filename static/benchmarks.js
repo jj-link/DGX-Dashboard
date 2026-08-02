@@ -13,7 +13,7 @@ document.querySelectorAll('.tab-btn').forEach(btn => {
       startLivePolling();
     } else {
       stopLivePolling();
-      if (tabId === 'benchmarks' && !benchmarksData) fetchBenchmarks();
+      if (tabId === 'benchmarks') fetchBenchmarks();
       if (tabId === 'control') document.dispatchEvent(new CustomEvent('dashboard:control-active'));
     }
   });
@@ -35,7 +35,7 @@ document.querySelectorAll('.sub-tab-btn').forEach(btn => {
 
 async function fetchBenchmarks() {
   try {
-    const resp = await fetch('/api/benchmarks');
+    const resp = await fetch('/api/benchmarks', { cache: 'no-store' });
     if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
     benchmarksData = await resp.json();
     renderAllBenchmarks(benchmarksData);
@@ -44,6 +44,18 @@ async function fetchBenchmarks() {
       p.innerHTML = `<div class="bm-empty">Error loading benchmarks: ${he(e.message)}</div>`;
     });
   }
+}
+
+function renderOneshotModel(entry) {
+  const details = [
+    entry.target,
+    entry.started,
+    entry.run_id ? entry.run_id.slice(0, 8) : '',
+  ].filter(Boolean);
+  const detailHtml = details.length
+    ? `<div style="font-size:10px;color:var(--text-dim);margin-top:3px">${details.map(he).join(' · ')}</div>`
+    : '';
+  return `<strong>${he(entry.model)}</strong>${detailHtml}`;
 }
 
 function renderAllBenchmarks(data) {
@@ -66,9 +78,9 @@ function renderOneshotTable(tbl) {
   html += '</tr></thead><tbody>';
   sorted.forEach(entry => {
     const overallColor = entry.overall >= 80 ? 'var(--green)' : entry.overall >= 50 ? 'var(--yellow)' : 'var(--red)';
-    html += `<tr><td><strong>${he(entry.model)}</strong></td>`;
-    html += `<td class="num">${he(entry.params)}</td>`;
-    html += `<td>${he(entry.quant)}</td>`;
+    html += `<tr><td>${renderOneshotModel(entry)}</td>`;
+    html += `<td class="num">${he(entry.params || '--')}</td>`;
+    html += `<td>${he(entry.quant || '--')}</td>`;
     html += `<td class="num"><div style="color:${overallColor};font-weight:600">${entry.overall}%</div><div class="table-bar-wrap"><div class="table-bar" style="width:${entry.overall}%;background:${overallColor}"></div></div></td>`;
     langs.forEach(l => {
       const d = entry.per_lang[l];
@@ -131,7 +143,7 @@ function renderHeatmap(tbl) {
   sorted.forEach(entry => {
     const overallColor = entry.overall >= 80 ? '0,230,118' : entry.overall >= 50 ? '255,202,40' : '255,82,82';
     const overallAlpha = (entry.overall / 100 * 0.35).toFixed(2);
-    html += `<tr><td><strong>${he(entry.model)}</strong></td>`;
+    html += `<tr><td>${renderOneshotModel(entry)}</td>`;
     langs.forEach(l => {
       const d = entry.per_lang[l];
       if (d != null) {

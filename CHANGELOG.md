@@ -13,4 +13,5 @@
 - Fix: preserve durable run history when a serving recipe leaves the active catalog, without allowing that retired recipe to launch.
 - Fix: keep the last successful serving recipe visible after a failed start, reject occupied target ports before Docker creation, and guide operators to stop the active recipe first.
 - Fix: keep authenticated controls available for healthy targets when another Spark is offline, while rejecting only the affected target before durable run creation.
+- Fix: add completed dashboard oneshot runs to the Benchmarks table and refresh benchmark data whenever the tab is opened.
 - Change: verify start, model response, stop, and cleanup through the canonical repository on `local`, all three Spark nodes, and the Spark 2 + Spark 3 cluster.

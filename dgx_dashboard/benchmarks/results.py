@@ -16,10 +16,11 @@ from typing import Callable, Iterator
 from dgx_dashboard.config import BenchmarkSettings
 
 
-INDEX_VERSION = 1
+INDEX_VERSION = 2
 BENCHMARK_CACHE_TTL = 300
 _SUMMARY_NAME = re.compile(r".*-oneshot-.*\.json\Z")
 _TIMESTAMP = re.compile(r"(\d{8}-\d{6})(?:\.json)?\Z")
+_LANGUAGES = ("python", "javascript", "go", "rust", "cpp", "java")
 
 
 def _timestamp_from_name(name: str) -> str:
@@ -93,6 +94,22 @@ def parse_summary(path: Path) -> dict[str, object] | None:
         for item in results
         if isinstance(item, dict) and isinstance(item.get("completion_tokens", 0), (int, float))
     )
+    language = _safe_string(data.get("lang") or data.get("language"))
+    languages = (
+        {language: {"passed": passed, "total": len(results)}}
+        if language
+        else _language_counts(results)
+    )
+    metadata = data.get("meta")
+    if not isinstance(metadata, dict):
+        metadata = {}
+    pass_rate = data.get("pass_rate")
+    complete = (
+        data.get("passed") == passed
+        and data.get("total") == len(results)
+        and isinstance(pass_rate, (int, float))
+        and not isinstance(pass_rate, bool)
+    )
     return {
         "kind": "oneshot",
         "timestamp": timestamp,
@@ -102,11 +119,15 @@ def parse_summary(path: Path) -> dict[str, object] | None:
         "run_id": _safe_string(data.get("run_id")),
         "started": _safe_string(data.get("started"), timestamp),
         "finished": _safe_string(data.get("finished")),
+        "language": language,
+        "complete": complete,
+        "quant": _safe_string(metadata.get("quant")),
+        "reasoning": _safe_string(metadata.get("reasoning")),
         "passed": passed,
         "total": len(results),
         "prompt_tokens": prompt_tokens,
         "completion_tokens": completion_tokens,
-        "languages": _language_counts(results),
+        "languages": languages,
     }
 
 
@@ -282,6 +303,92 @@ class ResultIndex:
             }
         return aggregated
 
+    @staticmethod
+    def oneshot_run_rows(summaries: list[dict[str, object]]) -> list[dict[str, object]]:
+        """Aggregate completed per-language summaries into one row per dashboard run."""
+
+        grouped: dict[str, list[dict[str, object]]] = {}
+        for summary in summaries:
+            run_id = _safe_string(summary.get("run_id"))
+            language = _safe_string(summary.get("language"))
+            if (
+                summary.get("kind") != "oneshot"
+                or summary.get("complete") is not True
+                or not run_id
+                or language not in _LANGUAGES
+            ):
+                continue
+            grouped.setdefault(run_id, []).append(summary)
+
+        rows: list[dict[str, object]] = []
+        for run_id, run_summaries in grouped.items():
+            latest_by_language: dict[str, dict[str, object]] = {}
+            for summary in run_summaries:
+                language = _safe_string(summary.get("language"))
+                previous = latest_by_language.get(language)
+                if previous is None or _safe_string(summary.get("started")) > _safe_string(
+                    previous.get("started")
+                ):
+                    latest_by_language[language] = summary
+
+            per_language: dict[str, dict[str, object]] = {}
+            passed = 0
+            total = 0
+            for language in _LANGUAGES:
+                summary = latest_by_language.get(language)
+                if summary is None:
+                    continue
+                language_passed = summary.get("passed")
+                language_total = summary.get("total")
+                if (
+                    not isinstance(language_passed, int)
+                    or isinstance(language_passed, bool)
+                    or not isinstance(language_total, int)
+                    or isinstance(language_total, bool)
+                    or language_total < 0
+                    or language_passed < 0
+                    or language_passed > language_total
+                ):
+                    continue
+                passed += language_passed
+                total += language_total
+                per_language[language] = {
+                    "ok": language_passed,
+                    "total": language_total,
+                    "pct": round(100 * language_passed / language_total, 1)
+                    if language_total
+                    else 0,
+                }
+
+            if not per_language:
+                continue
+            representative = max(
+                latest_by_language.values(),
+                key=lambda summary: _safe_string(summary.get("started")),
+            )
+            started_values = [
+                _safe_string(summary.get("started"))
+                for summary in latest_by_language.values()
+                if _safe_string(summary.get("started"))
+            ]
+            rows.append(
+                {
+                    "model": _safe_string(
+                        representative.get("alias"),
+                        _safe_string(representative.get("served"), "unknown"),
+                    ),
+                    "params": "",
+                    "quant": _safe_string(representative.get("quant")),
+                    "per_lang": per_language,
+                    "overall": round(100 * passed / total, 1) if total else 0,
+                    "run_id": run_id,
+                    "target": _safe_string(representative.get("target")),
+                    "started": min(started_values) if started_values else "",
+                    "reasoning": _safe_string(representative.get("reasoning")),
+                }
+            )
+        return sorted(rows, key=lambda row: _safe_string(row.get("started")), reverse=True)
+
 
 class BenchmarkResults:
     """Serve the legacy benchmark payload plus indexed dynamic summaries."""
@@ -369,8 +476,14 @@ class BenchmarkResults:
             if not isinstance(static, dict):
                 raise ValueError("benchmark_static.json must contain an object")
             summaries = self.index.refresh()
+            legacy_oneshot = static.get("oneshot_table", [])
+            if not isinstance(legacy_oneshot, list):
+                legacy_oneshot = []
             return {
-                "oneshot_table": static.get("oneshot_table", []),
+                "oneshot_table": [
+                    *ResultIndex.oneshot_run_rows(summaries),
+                    *legacy_oneshot,
+                ],
                 "multiturn_lang_table": static.get("multiturn_lang_table", []),
                 "quant_comparison_table": static.get("quant_comparison_table", []),
                 "comparison_table": static.get("comparison_table", []),
