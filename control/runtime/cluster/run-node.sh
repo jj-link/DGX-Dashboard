@@ -382,8 +382,6 @@ profile_matches_container() {
       [[ -n "$actual" && "$actual" == "${!variable}" ]] || return 1
     done
   fi
-  actual="$(container_env_value DGX_MODEL_CAPABILITIES_SHA256 || true)"
-  [[ -n "$actual" && "$actual" == "$CAPABILITIES_SHA256" ]]
 }
 
 status_node() {
@@ -489,6 +487,10 @@ for mount in container.get("Mounts", []):
     esac
     [[ "$(docker inspect -f "{{range .Config.Env}}{{println .}}{{end}}" "$CONTAINER" | grep -F -m1 "$variable=" || true)" == "$variable=$expected" ]] || fail "container '$CONTAINER' has the wrong $variable"
   done
+  if [[ "$ENGINE" == vllm ]]; then
+    [[ "$(container_env_value DGX_MODEL_CAPABILITIES_SHA256 || true)" == "$CAPABILITIES_SHA256" ]] ||
+      fail "container '$CONTAINER' has the wrong model capability profile"
+  fi
 }
 
 case "$ACTION" in
