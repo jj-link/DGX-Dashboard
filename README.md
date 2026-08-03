@@ -211,6 +211,12 @@ Only completed, unsampled runs covering all six languages are merged into the Be
 
 Control startup validates global authentication, binding, repository, and durable-storage invariants without requiring every target to be online. Each submitted mutation then checks only its own infrastructure: local operations require workstation Docker and the expected GPU, remote operations require SSH to that Spark, and `cluster` requires both Spark 2 and Spark 3; benchmarks also require workstation Docker. An unavailable dependency returns HTTP `503` with code `target_unavailable` before a run ID, resource lease, or durable record is created. Healthy targets remain operable while another target is offline.
 
+## Model capability discovery
+
+Serving recipes publish client-relevant metadata from the live inference endpoint at `GET /v1/model-capabilities`. The versioned document identifies the active served model, context and output limits, input and tool support, and the exact reasoning levels and request format. The server refuses to start when its tracked capability profile is missing, malformed, or changed after launch.
+
+The OMP extension at `control/clients/omp/spark-cluster.ts` reads this endpoint during startup and registers the currently served model with those capabilities. OMP therefore does not require a per-model `modelOverrides` entry when the cluster changes models; the serving recipe remains the authority for both runtime behavior and client metadata.
+
 ## Repository synchronization
 
 The workstation is the source controller. Synchronize clean, published commits to Spark checkouts:
@@ -239,6 +245,7 @@ Useful focused smoke checks:
 ./serve.sh <target> <engine> <artifact> status
 ./serve.sh <target> <engine> <artifact> verify
 curl --fail http://<target-endpoint>/v1/models
+curl --fail http://<target-endpoint>/v1/model-capabilities
 ```
 
 For a serving cutover, capture a deterministic chat response before stop, start the same recipe from this repository, repeat the same request, and compare model, content, and finish reason.
