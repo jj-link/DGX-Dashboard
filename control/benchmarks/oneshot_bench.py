@@ -345,11 +345,11 @@ def main():
     ap.add_argument("--served-model", help="Override served-model-name")
     ap.add_argument("--num-tests", type=int, default=-1, help="-1 = all")
     ap.add_argument("--keywords", default="", help="Comma-separated name filters")
-    ap.add_argument("--max-tokens", type=int, default=32768,
-                    help="Output token budget. MUST be large for reasoning "
-                         "models — they spend 15-30k tokens thinking before "
-                         "emitting code; 8192 truncates them mid-reasoning "
-                         "and floors the score with empty answers.")
+    ap.add_argument("--max-tokens", type=int, default=131072,
+                    help="Output token budget. MUST be large for DeepSeek "
+                         "high/max reasoning — it spends tens of thousands of "
+                         "tokens thinking before emitting code; 32768 truncates "
+                         "long reasoning and floors the score with partial code.")
     ap.add_argument("--temperature", type=float, default=1.0,
                     help="Sampling temperature (default: 1.0)")
     ap.add_argument("--timeout", type=int, default=600,

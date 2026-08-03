@@ -22,7 +22,7 @@ oneshot args:
   --served-model NAME
   --num-tests N                 default: -1 (all)
   --keywords NAME,...
-  --max-tokens N                default: 32768
+  --max-tokens N                default: 131072
   --temperature FLOAT           default: 1.0
   --timeout SEC                 default: 600
   --test-timeout SEC            default: 300
