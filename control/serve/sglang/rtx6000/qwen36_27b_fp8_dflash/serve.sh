@@ -83,7 +83,10 @@ fi
 #  radix/mamba assert:      keep MAMBA_STRATEGY=auto, or `export SGLANG_ENABLE_SPEC_V2=1`
 #  last resort image:       IMAGE=voipmonitor/llm-pytorch-blackwell:nightly (unofficial SM120 build)
 
-exec python3 -m sglang.launch_server \
+export DGX_MODEL_CAPABILITIES_PATH=/run/inference/package/capabilities.json
+export MAX_MODEL_LEN="$MAXLEN"
+
+exec python3 -m sglang_with_capabilities \
   --model-path "$MODEL" \
   --served-model-name "$SERVED" \
   --speculative-algorithm DFLASH \

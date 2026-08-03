@@ -237,6 +237,8 @@ container_args+=(
   --env HOME=/root/.cache
   --publish "$BIND_ADDRESS:$HOST_PORT:8000/tcp"
   --mount "type=bind,src=$PACKAGE,dst=/run/inference/package,readonly"
+  --mount "type=bind,src=$ROOT/runtime,dst=/run/inference/runtime,readonly"
+  --env "PYTHONPATH=/run/inference/runtime"
   --env "MODEL_PATH=$MODEL_PATH"
   --env "DRAFTER_PATH=$DRAFTER_PATH"
   --env "TOKENIZER_PATH=$TOKENIZER_PATH"

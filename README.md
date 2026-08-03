@@ -213,9 +213,9 @@ Control startup validates global authentication, binding, repository, and durabl
 
 ## Model capability discovery
 
-Serving recipes publish client-relevant metadata from the live inference endpoint at `GET /v1/model-capabilities`. The versioned document identifies the active served model, context and output limits, input and tool support, and the exact reasoning levels and request format. The server refuses to start when its tracked capability profile is missing, malformed, or changed after launch.
+Serving recipes publish client-relevant metadata from the live inference endpoint at `GET /v1/model-capabilities`. The versioned document identifies the active served model, context and output limits, input and tool support, and the exact reasoning levels and request format. Capability-backed servers fail startup when the profile is missing or malformed; cluster lifecycle verification also rejects profile drift.
 
-The OMP extension at `control/clients/omp/spark-cluster.ts` reads this endpoint during startup and registers the currently served model with those capabilities. OMP therefore does not require a per-model `modelOverrides` entry when the cluster changes models; the serving recipe remains the authority for both runtime behavior and client metadata.
+The reusable OMP integration under `control/clients/omp/` reads this endpoint during startup and registers the currently served model with those capabilities. `spark-cluster.ts` covers the Spark 2 + Spark 3 vLLM service, while `local-sglang.ts` covers the RTX 6000 SGLang service. The SGLang launcher attaches the capability middleware directly to SGLang's FastAPI application rather than adding another inference proxy. OMP therefore does not require per-model `modelOverrides` entries when either service changes to another capability-backed recipe; the serving recipe remains the authority for runtime behavior and client metadata.
 
 ## Repository synchronization
 

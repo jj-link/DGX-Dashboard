@@ -4,7 +4,7 @@
 
 - Feature: consolidate workstation and DGX Spark serving, benchmarking, monitoring, and durable web operations into one authenticated control plane.
 - Feature: promote the DeepSeek DSpark `quality`, `balanced`, and `throughput` modes to validated launch profiles with dashboard selection, exact-profile lifecycle commands, independent status discovery, conflict reporting, and durable history.
-- Feature: publish the active cluster model's validated context, output, tool, and reasoning capabilities at `/v1/model-capabilities`, and let OMP register that model dynamically without a per-model override.
+- Feature: publish validated context, output, tool, and reasoning capabilities from the active Spark-cluster vLLM and local RTX 6000 SGLang models at `/v1/model-capabilities`, and let OMP register both models dynamically without per-model overrides.
 - Change: import the former inference repository history and runtime control tree without moving model weights, caches, images, or generated results into Git.
 - Change: centralize benchmark results, corpus data, run metadata, logs, and the incremental result index under `/var/lib/dgx-dashboard`.
 - Security: require private binding, Basic authentication, same-origin JSON mutations, strict request limits, validated recipes, exact resource leases, and labeled cleanup.
