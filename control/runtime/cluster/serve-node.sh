@@ -54,11 +54,22 @@ case "$ENGINE/$ARTIFACT" in
     ;;
   vllm/deepseek_ai_deepseek_v4_flash_dspark_tp2)
     speculative_config="{\"method\":\"dspark\",\"num_speculative_tokens\":${MTP_NUM_TOKENS:-5},\"draft_sample_method\":\"probabilistic\"}"
+    CAPABILITIES_PATH="${DGX_MODEL_CAPABILITIES_PATH:?DGX_MODEL_CAPABILITIES_PATH is required}"
+    CAPABILITIES_SHA256="${DGX_MODEL_CAPABILITIES_SHA256:?DGX_MODEL_CAPABILITIES_SHA256 is required}"
+    [[ -f "$CAPABILITIES_PATH" && ! -L "$CAPABILITIES_PATH" ]] || {
+      printf 'error: model capability profile is unavailable\n' >&2
+      exit 1
+    }
+    [[ "$(sha256sum "$CAPABILITIES_PATH" | cut -d' ' -f1)" == "$CAPABILITIES_SHA256" ]] || {
+      printf 'error: model capability profile digest mismatch\n' >&2
+      exit 1
+    }
     args=(
       /usr/local/bin/vllm serve "$MODEL_PATH"
       --served-model-name "$SERVED"
       --host "$API_HOST"
       --port "$API_PORT"
+      --middleware model_capabilities.ModelCapabilitiesMiddleware
       --trust-remote-code
       --tensor-parallel-size 2
       --pipeline-parallel-size 1

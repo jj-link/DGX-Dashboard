@@ -33,6 +33,7 @@ PARSER="$CONTROL_ROOT/tools/parse-runtime-env.py"
 VALIDATOR="$CONTROL_ROOT/tools/validate-hf-snapshot.py"
 [[ -f "$PACKAGE/runtime.env" ]] || fail "missing cluster metadata '$PACKAGE/runtime.env'"
 [[ -x "$PARSER" ]] || fail "missing metadata parser '$PARSER'"
+CAPABILITIES_PATH="$PACKAGE/capabilities.json"
 
 declare -A META=()
 coproc METADATA_PARSER { python3 "$PARSER" "$PACKAGE/runtime.env"; }
@@ -80,6 +81,9 @@ case "$ENGINE/$ARTIFACT" in
     source "$PROFILE_FILE"
     set +a
     MAX_MODEL_LEN="${MAX_MODEL_LEN:-1048576}"
+    [[ -f "$CAPABILITIES_PATH" && ! -L "$CAPABILITIES_PATH" ]] ||
+      fail "missing DeepSeek model capability profile"
+    CAPABILITIES_SHA256="$(sha256sum "$CAPABILITIES_PATH" | cut -d' ' -f1)"
     ;;
   *) fail "unsupported cluster artifact '$ENGINE/$ARTIFACT'" ;;
 esac
@@ -296,7 +300,12 @@ start_node() {
   )
 
   if [[ "$ENGINE" == vllm ]]; then
-    environment+=( -e "CLUSTER_PROFILE=$PROFILE" )
+    environment+=(
+      -e "CLUSTER_PROFILE=$PROFILE"
+      -e "DGX_MODEL_CAPABILITIES_PATH=$CAPABILITIES_PATH"
+      -e "DGX_MODEL_CAPABILITIES_SHA256=$CAPABILITIES_SHA256"
+      -e "PYTHONPATH=$CONTROL_ROOT/runtime"
+    )
     local -a profile_environment=(
       KV_CACHE_DTYPE MAX_NUM_SEQS MAX_NUM_BATCHED_TOKENS GPU_MEMORY_UTILIZATION MTP_NUM_TOKENS
       VLLM_USE_FLASHINFER_SAMPLER VLLM_USE_B12X_MOE VLLM_USE_B12X_WO_PROJECTION
@@ -366,13 +375,15 @@ profile_matches_container() {
   local actual variable
   actual="$(container_env_value CLUSTER_PROFILE || true)"
   if [[ -n "$actual" ]]; then
-    [[ "$actual" == "$PROFILE" ]]
-    return
+    [[ "$actual" == "$PROFILE" ]] || return 1
+  else
+    for variable in KV_CACHE_DTYPE MAX_MODEL_LEN MAX_NUM_SEQS MTP_NUM_TOKENS; do
+      actual="$(container_env_value "$variable" || true)"
+      [[ -n "$actual" && "$actual" == "${!variable}" ]] || return 1
+    done
   fi
-  for variable in KV_CACHE_DTYPE MAX_MODEL_LEN MAX_NUM_SEQS MTP_NUM_TOKENS; do
-    actual="$(container_env_value "$variable" || true)"
-    [[ -n "$actual" && "$actual" == "${!variable}" ]] || return 1
-  done
+  actual="$(container_env_value DGX_MODEL_CAPABILITIES_SHA256 || true)"
+  [[ -n "$actual" && "$actual" == "$CAPABILITIES_SHA256" ]]
 }
 
 status_node() {

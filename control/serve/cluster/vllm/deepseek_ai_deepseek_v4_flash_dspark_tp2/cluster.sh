@@ -169,6 +169,19 @@ if len(rows) != 1:
     raise SystemExit(f"expected exactly one model named {served!r}, found {len(rows)}")
 if int(rows[0].get("max_model_len", -1)) != int(max_model_len):
     raise SystemExit(f"model max_model_len mismatch: {rows[0].get('max_model_len')!r}")
+with urllib.request.urlopen(f"{base}/model-capabilities", timeout=30) as response:
+    capabilities = json.load(response)
+if capabilities.get("model") != served:
+    raise SystemExit(f"capability model mismatch: {capabilities.get('model')!r}")
+if capabilities.get("context_window") != int(max_model_len):
+    raise SystemExit(f"capability context mismatch: {capabilities.get('context_window')!r}")
+if capabilities.get("tools") != {"supported": True, "parallel": True}:
+    raise SystemExit(f"capability tools mismatch: {capabilities.get('tools')!r}")
+reasoning = capabilities.get("reasoning", {})
+if reasoning.get("levels") != ["high", "max"]:
+    raise SystemExit(f"capability reasoning levels mismatch: {reasoning.get('levels')!r}")
+if reasoning.get("request_format") != "qwen-chat-template":
+    raise SystemExit(f"capability reasoning format mismatch: {reasoning.get('request_format')!r}")
 payload = json.dumps({
     "model": served,
     "messages": [{"role": "user", "content": "Reply with exactly STANDARDIZATION_OK and nothing else."}],
@@ -195,7 +208,7 @@ if canonical["content"] != "STANDARDIZATION_OK":
     raise SystemExit(f"chat content mismatch: {canonical['content']!r}")
 if canonical["finish_reason"] != "stop":
     raise SystemExit(f"chat finish_reason mismatch: {canonical['finish_reason']!r}")
-print(json.dumps({"model": rows[0], "chat": canonical}, sort_keys=True))
+print(json.dumps({"model": rows[0], "capabilities": capabilities, "chat": canonical}, sort_keys=True))
 PY
 }
 
