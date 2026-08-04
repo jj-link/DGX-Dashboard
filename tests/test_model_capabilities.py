@@ -28,7 +28,7 @@ def test_deepseek_profile_loads_with_runtime_identity() -> None:
     assert document["model"] == "deepseek-v4-flash-0731"
     assert document["context_window"] == 1_048_576
     assert document["max_output_tokens"] == 393_216
-    assert document["quantization"] == {"weights": "NVFP4"}
+    assert document["quantization"] == {"weights": "FP8"}
     assert document["tools"] == {"supported": True, "parallel": True}
     assert document["reasoning"] == {
         "supported": True,
