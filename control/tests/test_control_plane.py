@@ -455,6 +455,38 @@ def test_benchmark_dispatcher() -> None:
         else:
             raise AssertionError(invalid_identity)
 
+    class CapabilityResponse:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args: object) -> None:
+            return None
+
+        @staticmethod
+        def read() -> bytes:
+            return json.dumps(
+                {
+                    "object": "model.capabilities",
+                    "model": "served-model",
+                    "quantization": {"weights": "NVFP4"},
+                    "reasoning": {"default": "high"},
+                }
+            ).encode()
+
+    capability_args = argparse.Namespace(
+        quant=None,
+        reasoning="enabled",
+        reasoning_effort=None,
+    )
+    original_urlopen = module.urllib.request.urlopen
+    module.urllib.request.urlopen = lambda *_args, **_kwargs: CapabilityResponse()
+    try:
+        module.apply_server_capabilities(capability_args, "served-model")
+    finally:
+        module.urllib.request.urlopen = original_urlopen
+    assert capability_args.quant == "NVFP4"
+    assert capability_args.reasoning_effort == "high"
+
     with tempfile.TemporaryDirectory() as temporary:
         exercise = pathlib.Path(temporary) / "exercise"
         exercise.mkdir()

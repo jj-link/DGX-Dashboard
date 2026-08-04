@@ -31,7 +31,8 @@ def write_summary(
         "served": "served-a",
         "meta": {
             "quant": "FP8",
-            "reasoning": "disabled",
+            "reasoning": "enabled",
+            "reasoning_effort": "high",
             "num_tests": num_tests,
             "keywords": keywords,
         },
@@ -283,7 +284,8 @@ def test_only_full_unsampled_dashboard_run_is_added_to_oneshot_table(tmp_path):
             "run_id": run_id,
             "target": "spark2",
             "started": "20260725-140000",
-            "reasoning": "disabled",
+            "reasoning": "enabled",
+            "reasoning_effort": "high",
         },
         {"model": "legacy"},
     ]

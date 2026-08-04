@@ -15,6 +15,7 @@
 - Fix: keep the last successful serving recipe visible after a failed start, reject occupied target ports before Docker creation, and guide operators to stop the active recipe first.
 - Fix: keep authenticated controls available for healthy targets when another Spark is offline, while rejecting only the affected target before durable run creation.
 - Fix: add completed dashboard oneshot runs to the Benchmarks table and refresh benchmark data whenever the tab is opened.
+- Fix: preserve exact reasoning effort and serving-authoritative weight quantization in benchmark summaries, the incremental result index, and dynamic Oneshot rows.
 - Fix: exclude single-language, `--num-tests`, and keyword-filtered runs from the comparative Oneshot table.
 - Fix: offer only the DeepSeek reasoning levels actually supported (`high`, `max`); `low`/`medium` silently collapsed to `high` and `max` was unreachable.
 - Change: raise the oneshot benchmark `--max-tokens` default to `131072` so DeepSeek `high`/`max` reasoning is not truncated.

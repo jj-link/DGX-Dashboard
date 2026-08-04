@@ -10,6 +10,7 @@ from typing import Any, Awaitable, Callable
 
 _SCHEMA_VERSION = 1
 _ALLOWED_LEVELS = ("minimal", "low", "medium", "high", "xhigh", "max")
+_MAX_QUANTIZATION_LENGTH = 32
 
 
 def _fail(message: str) -> ValueError:
@@ -27,6 +28,7 @@ def load_capabilities(path: Path, *, model: str, context_window: int) -> dict[st
         "input",
         "max_output_tokens",
         "tools",
+        "quantization",
         "reasoning",
     }:
         raise _fail("unexpected top-level fields")
@@ -38,6 +40,18 @@ def load_capabilities(path: Path, *, model: str, context_window: int) -> dict[st
         raise _fail("input must be text or text+image")
     if not isinstance(raw["max_output_tokens"], int) or raw["max_output_tokens"] < 1:
         raise _fail("max_output_tokens must be positive")
+    quantization = raw["quantization"]
+    if not isinstance(quantization, dict) or set(quantization) != {"weights"}:
+        raise _fail("quantization fields are invalid")
+    weight_quantization = quantization["weights"]
+    if (
+        not isinstance(weight_quantization, str)
+        or not weight_quantization
+        or len(weight_quantization) > _MAX_QUANTIZATION_LENGTH
+        or not all(character.isalnum() or character in "._+-" for character in weight_quantization)
+    ):
+        raise _fail("weight quantization is invalid")
+
 
     tools = raw["tools"]
     if not isinstance(tools, dict) or set(tools) != {"supported", "parallel"}:
@@ -90,6 +104,7 @@ def load_capabilities(path: Path, *, model: str, context_window: int) -> dict[st
         "input": raw["input"],
         "context_window": context_window,
         "max_output_tokens": raw["max_output_tokens"],
+        "quantization": quantization,
         "tools": tools,
         "reasoning": reasoning,
     }

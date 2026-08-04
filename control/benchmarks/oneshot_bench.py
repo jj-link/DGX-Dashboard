@@ -335,6 +335,43 @@ def benchmark_identity(environment: dict[str, str] | None = None) -> tuple[str, 
         raise ValueError("DGX_DASHBOARD_RUN_ID must be a lowercase UUID")
     return target, run_id
 
+def apply_server_capabilities(args, served: str) -> None:
+    """Fill omitted reproducibility metadata from the serving authority."""
+    try:
+        request = urllib.request.Request(
+            f"{BASE_URL}/model-capabilities",
+            headers={"Accept": "application/json"},
+        )
+        with urllib.request.urlopen(request, timeout=5) as response:
+            capabilities = json.loads(response.read().decode())
+        if (
+            not isinstance(capabilities, dict)
+            or capabilities.get("object") != "model.capabilities"
+            or capabilities.get("model") != served
+        ):
+            raise ValueError("capability model identity does not match /models")
+        quantization = capabilities.get("quantization")
+        if not isinstance(quantization, dict):
+            raise ValueError("capability quantization is missing")
+        weights = quantization.get("weights")
+        if not isinstance(weights, str) or not weights:
+            raise ValueError("capability weight quantization is invalid")
+        if args.quant is None:
+            args.quant = weights
+        reasoning = capabilities.get("reasoning")
+        if args.reasoning == "enabled" and args.reasoning_effort is None:
+            if not isinstance(reasoning, dict) or reasoning.get("default") not in {"high", "max"}:
+                raise ValueError("capability reasoning default is invalid")
+            args.reasoning_effort = reasoning["default"]
+        print(
+            f"[metadata] quant={args.quant or 'unknown'} "
+            f"reasoning_effort={args.reasoning_effort or 'off'}",
+            flush=True,
+        )
+    except Exception as error:
+        print(f"[metadata] capability discovery unavailable: {error}", file=sys.stderr, flush=True)
+
+
 
 def main():
     global BENCHMARK_TARGET, BENCHMARK_RUN_ID
@@ -406,6 +443,7 @@ def main():
     except Exception as e:
         print(f"[health] FAIL: {e}", file=sys.stderr)
         sys.exit(2)
+    apply_server_capabilities(args, served)
 
     # Docker preflight — after endpoint health, before any grading container.
     if subprocess.run(["docker", "info"], capture_output=True).returncode != 0:

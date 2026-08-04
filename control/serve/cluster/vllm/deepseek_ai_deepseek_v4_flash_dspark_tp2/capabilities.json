@@ -3,6 +3,9 @@
   "api": "openai-completions",
   "input": ["text"],
   "max_output_tokens": 393216,
+  "quantization": {
+    "weights": "NVFP4"
+  },
   "tools": {
     "supported": true,
     "parallel": true

@@ -16,7 +16,7 @@ from typing import Callable, Iterator
 from dgx_dashboard.config import BenchmarkSettings
 
 
-INDEX_VERSION = 3
+INDEX_VERSION = 4
 BENCHMARK_CACHE_TTL = 300
 _SUMMARY_NAME = re.compile(r".*-oneshot-.*\.json\Z")
 _TIMESTAMP = re.compile(r"(\d{8}-\d{6})(?:\.json)?\Z")
@@ -128,6 +128,7 @@ def parse_summary(path: Path) -> dict[str, object] | None:
         "complete": complete,
         "quant": _safe_string(metadata.get("quant")),
         "reasoning": _safe_string(metadata.get("reasoning")),
+        "reasoning_effort": _safe_string(metadata.get("reasoning_effort")),
         "num_tests": num_tests,
         "keywords": keywords,
         "passed": passed,
@@ -397,6 +398,7 @@ class ResultIndex:
                     "target": _safe_string(representative.get("target")),
                     "started": min(started_values) if started_values else "",
                     "reasoning": _safe_string(representative.get("reasoning")),
+                    "reasoning_effort": _safe_string(representative.get("reasoning_effort")),
                 }
             )
         return sorted(rows, key=lambda row: _safe_string(row.get("started")), reverse=True)

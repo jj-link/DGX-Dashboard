@@ -49,6 +49,12 @@ export function registerCapabilityProvider(
       input: z.array(z.enum(["text", "image"])).min(1),
       context_window: z.number().int().positive(),
       max_output_tokens: z.number().int().positive(),
+      quantization: z
+        .object({
+          weights: z.string().min(1).max(32).regex(/^[A-Za-z0-9._+-]+$/),
+        })
+        .strict()
+        .optional(),
       tools: z
         .object({
           supported: z.boolean(),
