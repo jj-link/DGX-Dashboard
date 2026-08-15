@@ -16,6 +16,10 @@ _PROFILE = (
     _REPO_ROOT
     / "control/serve/cluster/vllm/deepseek_ai_deepseek_v4_flash_dspark_tp2/capabilities.json"
 )
+_QWEN_PROFILE = (
+    _REPO_ROOT
+    / "control/serve/vllm/rtx6000/qwen38_27b_fp8/capabilities.json"
+)
 
 
 def test_deepseek_profile_loads_with_runtime_identity() -> None:
@@ -35,6 +39,23 @@ def test_deepseek_profile_loads_with_runtime_identity() -> None:
         "can_disable": True,
         "levels": ["high", "max"],
         "default": "high",
+        "request_format": "qwen-chat-template",
+        "response_field": "reasoning_content",
+    }
+
+
+def test_qwen38_profile_publishes_native_reasoning_efforts() -> None:
+    document = load_capabilities(
+        _QWEN_PROFILE,
+        model="Qwen3.8-27B",
+        context_window=262_144,
+    )
+
+    assert document["reasoning"] == {
+        "supported": True,
+        "can_disable": True,
+        "levels": ["low", "medium", "xhigh"],
+        "default": "xhigh",
         "request_format": "qwen-chat-template",
         "response_field": "reasoning_content",
     }

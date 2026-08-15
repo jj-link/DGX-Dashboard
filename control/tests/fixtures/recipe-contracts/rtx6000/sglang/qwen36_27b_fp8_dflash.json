@@ -31,6 +31,10 @@
     "127.0.0.1:8000:8000/tcp",
     "--mount",
     "type=bind,src=<PACKAGE>,dst=/run/inference/package,readonly",
+    "--mount",
+    "type=bind,src=/home/workbench/Projects/personal/dgx-dashboard/control/runtime,dst=/run/inference/runtime,readonly",
+    "--env",
+    "PYTHONPATH=/run/inference/runtime",
     "--env",
     "MODEL_PATH=/models/hub/models--Qwen--Qwen3.6-27B-FP8/snapshots/e89b16ebf1988b3d6befa7de50abc2d76f26eb09",
     "--env",
@@ -56,7 +60,7 @@
   "engine_command": {
     "argv": [
       "-m",
-      "sglang.launch_server",
+      "sglang_with_capabilities",
       "--model-path",
       "/models/hub/models--Qwen--Qwen3.6-27B-FP8/snapshots/e89b16ebf1988b3d6befa7de50abc2d76f26eb09",
       "--served-model-name",

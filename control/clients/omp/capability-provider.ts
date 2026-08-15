@@ -72,30 +72,35 @@ export function registerCapabilityProvider(
         })
         .strict(),
     })
-    .strict()
-    .superRefine((document, context) => {
-      const published = document.reasoning.levels;
-      if (new Set(published).size !== published.length) {
-        context.addIssue({ code: "custom", path: ["reasoning", "levels"], message: "levels must be unique" });
-      }
-      const canonical = LEVELS.filter((level) => published.includes(level));
-      if (canonical.some((level, index) => level !== published[index])) {
-        context.addIssue({ code: "custom", path: ["reasoning", "levels"], message: "levels must use canonical order" });
-      }
-      if (document.reasoning.supported !== (published.length > 0)) {
-        context.addIssue({ code: "custom", path: ["reasoning", "supported"], message: "support must agree with levels" });
-      }
-      if (document.reasoning.default !== null && !published.includes(document.reasoning.default)) {
-        context.addIssue({ code: "custom", path: ["reasoning", "default"], message: "default must be published" });
-      }
-      if (document.tools.parallel && !document.tools.supported) {
-        context.addIssue({ code: "custom", path: ["tools", "parallel"], message: "parallel tools require tool support" });
-      }
-    });
+    .strict();
 
   const parsed = capabilitiesSchema.safeParse(loaded.payload);
   if (!parsed.success) {
     pi.logger.error(`${options.id} capability discovery rejected: ${z.prettifyError(parsed.error)}`);
+    return;
+  }
+
+  const document = parsed.data;
+  const published = document.reasoning.levels;
+  const semanticErrors: string[] = [];
+  if (new Set(published).size !== published.length) {
+    semanticErrors.push("reasoning.levels must be unique");
+  }
+  const canonical = LEVELS.filter((level) => published.includes(level));
+  if (canonical.some((level, index) => level !== published[index])) {
+    semanticErrors.push("reasoning.levels must use canonical order");
+  }
+  if (document.reasoning.supported !== (published.length > 0)) {
+    semanticErrors.push("reasoning.supported must agree with reasoning.levels");
+  }
+  if (document.reasoning.default !== null && !published.includes(document.reasoning.default)) {
+    semanticErrors.push("reasoning.default must be published in reasoning.levels");
+  }
+  if (document.tools.parallel && !document.tools.supported) {
+    semanticErrors.push("tools.parallel requires tools.supported");
+  }
+  if (semanticErrors.length > 0) {
+    pi.logger.error(`${options.id} capability discovery rejected: ${semanticErrors.join("; ")}`);
     return;
   }
 
