@@ -88,6 +88,36 @@ case "$ENGINE/$ARTIFACT" in
   *) fail "unsupported cluster artifact '$ENGINE/$ARTIFACT'" ;;
 esac
 
+resolve_nccl_gid_index() {
+  command -v show_gids >/dev/null 2>&1 || fail "show_gids is unavailable"
+  python3 - "$RDMA_HCA" "$NODE_ADDR" <<'PY'
+import subprocess
+import sys
+
+hca, node_addr = sys.argv[1:]
+output = subprocess.run(
+    ["show_gids"],
+    check=True,
+    capture_output=True,
+    text=True,
+).stdout
+for line in output.splitlines():
+    fields = line.split()
+    if (
+        len(fields) >= 7
+        and fields[0] == hca
+        and fields[4] == node_addr
+        and fields[5] == "v2"
+    ):
+        print(fields[2])
+        break
+else:
+    raise SystemExit(
+        f"no RoCE v2 GID for {hca} and node address {node_addr}"
+    )
+PY
+}
+
 repo_directory() {
   printf 'models--%s\n' "${1//\//--}"
 }
@@ -217,6 +247,7 @@ preflight() {
   ip link show dev "$DIST_IF" | grep -q 'state UP' || fail "$DIST_IF is not UP"
   ip -4 -o addr show dev "$DIST_IF" | grep -Eq "[[:space:]]inet[[:space:]]+$NODE_ADDR/" || fail "$DIST_IF does not own $NODE_ADDR"
   ibv_devinfo -d "$RDMA_HCA" >/dev/null 2>&1 || fail "$RDMA_HCA is not an RDMA device"
+  resolve_nccl_gid_index >/dev/null
   docker image inspect "$IMAGE" >/dev/null 2>&1 || fail "image '$IMAGE' is unavailable"
   if docker container inspect "$CONTAINER" >/dev/null 2>&1; then
     [[ -n "$PREFLIGHT_REPLACE_CONTAINER" ]] || fail "container '$CONTAINER' already exists"
@@ -241,6 +272,7 @@ preflight() {
   printf 'HOST=%s\n' "$(hostname)"
   printf 'RANK=%s\n' "$RANK"
   printf 'MODEL_REPO_HOST=%s\n' "$MODEL_REPO_HOST"
+  printf 'NCCL_IB_GID_INDEX=%s\n' "$(resolve_nccl_gid_index)"
   [[ -z "$DRAFTER_REPO_HOST" ]] || printf 'DRAFTER_REPO_HOST=%s\n' "$DRAFTER_REPO_HOST"
   [[ -z "$api_host" ]] || printf 'API_HOST=%s\n' "$api_host"
 }
@@ -253,6 +285,8 @@ start_node() {
   else
     api_host=127.0.0.1
   fi
+  local nccl_gid_index
+  nccl_gid_index="$(resolve_nccl_gid_index)"
 
   local -a mounts=(
     -v "$MODEL_REPO_HOST:$MODEL_REPO_CONTAINER:ro"
@@ -280,7 +314,7 @@ start_node() {
     -e "NCCL_SOCKET_IFNAME=$DIST_IF"
     -e "GLOO_SOCKET_IFNAME=$DIST_IF"
     -e "TP_SOCKET_IFNAME=$DIST_IF"
-    -e "NCCL_IB_GID_INDEX=3"
+    -e "NCCL_IB_GID_INDEX=$nccl_gid_index"
     -e "NCCL_IB_ADDR_FAMILY=AF_INET"
     -e "NCCL_IB_ROCE_VERSION_NUM=2"
     -e "NCCL_CROSS_NIC=1"
