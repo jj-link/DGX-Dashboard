@@ -495,7 +495,7 @@ def test_node_preflight_and_launch() -> None:
                 assert "VLLM_DSPARK_CONFIDENCE_THRESHOLD=0.0" in run_arguments
                 assert "KV_CACHE_DTYPE=fp8_ds_mla" in run_arguments
                 assert "CLUSTER_PROFILE=quality" in run_arguments
-                assert "LONG_PREFILL_TOKEN_THRESHOLD=1024" in run_arguments
+                assert "LONG_PREFILL_TOKEN_THRESHOLD=128" in run_arguments
                 metadata = assignments(packages[(engine, artifact)] / "runtime.env")
                 repository = metadata["MODEL"].replace("/", "--")
                 assert any(f"MODEL_PATH=/models/hub/models--{repository}/" in value for value in run_arguments)
