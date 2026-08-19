@@ -79,6 +79,7 @@ case "$ENGINE/$ARTIFACT" in
       --max-model-len "$MAX_MODEL_LEN"
       --max-num-seqs "${MAX_NUM_SEQS:-6}"
       --max-num-batched-tokens "${MAX_NUM_BATCHED_TOKENS:-8192}"
+      --long-prefill-token-threshold "${LONG_PREFILL_TOKEN_THRESHOLD:-0}"
       --max-cudagraph-capture-size "$(( ${MAX_NUM_SEQS:-6} * (${MTP_NUM_TOKENS:-5} + 1) ))"
       --gpu-memory-utilization "${GPU_MEMORY_UTILIZATION:-0.85}"
       --enable-prefix-caching
