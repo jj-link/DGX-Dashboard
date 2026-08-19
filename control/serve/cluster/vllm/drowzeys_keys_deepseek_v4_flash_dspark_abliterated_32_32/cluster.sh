@@ -63,7 +63,7 @@ case "$ENGINE/$ARTIFACT" in
   sglang/unsloth_qwen36_27b_nvfp4_dflash_tp2)
     MAX_MODEL_LEN=262144
     ;;
-  vllm/deepseek_ai_deepseek_v4_flash_dspark_tp2)
+  vllm/deepseek_ai_deepseek_v4_flash_dspark_tp2|vllm/drowzeys_keys_deepseek_v4_flash_dspark_abliterated_32_32)
     DEFAULT_PROFILE_FILE="$PROFILE_ROOT/default"
     [[ -f "$DEFAULT_PROFILE_FILE" && ! -L "$DEFAULT_PROFILE_FILE" ]] ||
       fail "missing DeepSeek default launch profile"
