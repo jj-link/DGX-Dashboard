@@ -62,7 +62,8 @@ case "$ENGINE/$ARTIFACT" in
     MAX_MODEL_LEN=262144
     MASTER_PORT=25001
     ;;
-  vllm/deepseek_ai_deepseek_v4_flash_dspark_tp2)
+  vllm/deepseek_ai_deepseek_v4_flash_dspark_tp2|\
+  vllm/drowzeys_keys_deepseek_v4_flash_dspark_abliterated_32_32)
     [[ "$IMAGE" == "ghcr.io/anemll/dspark-vllm-gx10@sha256:a83948492cf13df455170fb42885f5ef4db54fefe0feff0f841ecbff464ac9d8" ]] ||
       fail "official DeepSeek V4 Flash 0731 requires the audited DSpark shared-expert loader image"
     PROFILE_ROOT="$PACKAGE/profiles"

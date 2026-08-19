@@ -128,12 +128,12 @@ Read or mutate an exact recipe-owned service:
 
 Single-device services bind the workstation model to loopback and Spark models to each node's Tailscale address. The two-node cluster binds its head API to Spark 2's Tailscale address on port `8888`; Spark 3 remains headless. Cluster lifecycle actions operate on both exact rank containers and verify two-way tensor parallelism plus RoCE/NCCL topology.
 
-The DeepSeek V4 Flash DSpark cluster recipe has three validated launch profiles:
+The stock and abliterated DeepSeek V4 Flash DSpark cluster recipes share three validated launch profiles:
 
 | Profile | KV cache | Context | Sequences | Speculation |
 |---|---|---:|---:|---:|
-| `quality` (default) | FP8 DS-MLA | 1,048,576 | 6 | MTP3 |
-| `balanced` | NVFP4 DS-MLA | 1,048,576 | 6 | MTP3 |
+| `quality` (default) | FP8 DS-MLA | 1,048,576 | 6 | MTP5 |
+| `balanced` | NVFP4 DS-MLA | 1,048,576 | 6 | MTP5 |
 | `throughput` | NVFP4 DS-MLA | 350,000 | 12 | MTP5 |
 
 Pass the profile after every lifecycle action; omitting it selects the tracked `quality` default:
@@ -147,7 +147,14 @@ artifact=deepseek_ai_deepseek_v4_flash_dspark_tp2
 ./serve.sh cluster vllm "$artifact" stop throughput
 ```
 
-Artifact plus launch profile is the exact lifecycle identity. Status probes all three profiles independently, even for containers started outside the dashboard. A split-rank or multiple-profile condition is reported as a conflict and blocks lifecycle mutations. In the **Control** tab, selecting this DeepSeek artifact reveals the profile dropdown and its KV-cache, context, sequence, and speculation settings.
+The gated abliterated checkpoint uses the same runtime and profiles:
+
+```bash
+artifact=drowzeys_keys_deepseek_v4_flash_dspark_abliterated_32_32
+./serve.sh cluster vllm "$artifact" start quality
+```
+
+Artifact plus launch profile is the exact lifecycle identity. Status probes all three profiles independently, even for containers started outside the dashboard. A split-rank or multiple-profile condition is reported as a conflict and blocks lifecycle mutations. In the **Control** tab, selecting either DeepSeek artifact reveals the profile dropdown and its KV-cache, context, sequence, and speculation settings.
 
 Starts never replace an occupied target implicitly. Stop the current exact recipe first. Container, image, network, port, model, and recipe identity checks fail closed rather than touching an unknown service.
 

@@ -52,7 +52,8 @@ case "$ENGINE/$ARTIFACT" in
       "${headless[@]}"
     )
     ;;
-  vllm/deepseek_ai_deepseek_v4_flash_dspark_tp2)
+  vllm/deepseek_ai_deepseek_v4_flash_dspark_tp2|\
+  vllm/drowzeys_keys_deepseek_v4_flash_dspark_abliterated_32_32)
     speculative_config="{\"method\":\"dspark\",\"num_speculative_tokens\":${MTP_NUM_TOKENS:-5},\"draft_sample_method\":\"probabilistic\"}"
     CAPABILITIES_PATH="${DGX_MODEL_CAPABILITIES_PATH:?DGX_MODEL_CAPABILITIES_PATH is required}"
     CAPABILITIES_SHA256="${DGX_MODEL_CAPABILITIES_SHA256:?DGX_MODEL_CAPABILITIES_SHA256 is required}"
