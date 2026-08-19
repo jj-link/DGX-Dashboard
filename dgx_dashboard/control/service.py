@@ -46,8 +46,20 @@ class ControlService:
         }
         probe_keys = set(selected_keys.values())
         for recipe in self.catalog.recipes():
-            for launch_profile in recipe.launch_profiles:
-                probe_keys.add((recipe.target, recipe.engine, recipe.artifact, launch_profile.name))
+            if recipe.launch_profiles:
+                for launch_profile in recipe.launch_profiles:
+                    probe_keys.add((recipe.target, recipe.engine, recipe.artifact, launch_profile.name))
+            else:
+                # Single-server recipes carry no launch profiles but a live
+                # container may be running independently of any recorded
+                # selection (e.g. started directly on the local box). Probe the
+                # local (rtx6000) single set so a running server is reported
+                # instead of an untracked target or a lingering error from a
+                # removed selection. Remote (spark) singles are left to recorded
+                # selections: proactively probing all of them is O(N) SSH and
+                # exceeds the control poll interval.
+                if recipe.profile == "rtx6000":
+                    probe_keys.add((recipe.target, recipe.engine, recipe.artifact, None))
 
         results: dict[tuple[str, str, str, str | None], dict[str, Any]] = {}
         if probe_keys:
