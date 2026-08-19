@@ -298,6 +298,15 @@ fi
     )
     executable(fake_bin / "ibv_devinfo", "#!/usr/bin/env bash\nexit 0\n")
     executable(
+        fake_bin / "show_gids",
+        """#!/usr/bin/env bash
+printf '%s\\n' \\
+  'DEV PORT INDEX GID IPv4 VER DEV' \\
+  'rocep1s0f1 1 3 0000:0000:0000:0000:ffff:0a00:0001 10.0.0.1 v2 enp1s0f1np1' \\
+  'rocep1s0f1 1 3 0000:0000:0000:0000:ffff:0a00:0002 10.0.0.2 v2 enp1s0f1np1'
+""",
+    )
+    executable(
         fake_bin / "ss",
         "#!/usr/bin/env bash\n[[ \"${FAKE_PORT_IN_USE:-0}\" == 1 ]] && printf '%s\n' 'LISTEN 0 128 0.0.0.0:8888 0.0.0.0:*'\nexit 0\n",
     )

@@ -18,7 +18,7 @@ _PROFILE = (
 )
 _QWEN_PROFILE = (
     _REPO_ROOT
-    / "control/serve/vllm/rtx6000/qwen38_27b_fp8/capabilities.json"
+    / "control/serve/sglang/rtx6000/qwen38_27b_nvfp4/capabilities.json"
 )
 
 
