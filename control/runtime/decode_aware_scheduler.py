@@ -5,18 +5,19 @@ from __future__ import annotations
 import os
 
 from vllm.logger import init_logger
-from vllm.v1.core.sched.scheduler import Scheduler
+from vllm.v1.core.sched.async_scheduler import AsyncScheduler
 
 logger = init_logger(__name__)
 
 
-class DecodeAwareScheduler(Scheduler):
-    """Run prefills on a cadence while any request is decoding.
+class DecodeAwareScheduler(AsyncScheduler):
+    """Use efficient prefill chunks on a cadence around active decode.
 
-    vLLM's scheduler already knows how to defer in-progress and waiting prefills
-    through ``throttle_prefills``. The base engine only activates that path for
-    data-parallel balancing. This subclass applies the same mechanism to TP
-    serving so an in-progress prefill cannot occupy every mixed scheduler step.
+    The default scheduler lets an in-progress prefill consume a large mixed
+    forward pass on every step. While decode is active, this scheduler permits
+    the configured long-prefill chunk once per cadence interval and temporarily
+    caps all other scheduling passes to the DSpark verify width. This preserves
+    async scheduling and does not mutate request lifecycle state.
     """
 
     def __init__(self, *args, **kwargs) -> None:
@@ -24,28 +25,47 @@ class DecodeAwareScheduler(Scheduler):
         self.decode_aware_prefill_interval = int(
             os.environ.get("DECODE_AWARE_PREFILL_INTERVAL", "1")
         )
+        self.decode_aware_throttled_tokens = int(
+            os.environ.get("DECODE_AWARE_THROTTLED_TOKENS", "1")
+        )
         if self.decode_aware_prefill_interval < 1:
             raise ValueError("DECODE_AWARE_PREFILL_INTERVAL must be at least 1")
+        if self.decode_aware_throttled_tokens < 1:
+            raise ValueError("DECODE_AWARE_THROTTLED_TOKENS must be at least 1")
+        self._logged_cadence_cap = False
         logger.info(
-            "Decode-aware prefill cadence interval: %d",
+            "Decode-aware prefill cadence: interval=%d throttled_tokens=%d",
             self.decode_aware_prefill_interval,
+            self.decode_aware_throttled_tokens,
         )
 
     def schedule(self, throttle_prefills: bool = False):
-        next_step = self.current_step + 1
         has_active_decode = any(
-            not request.is_prefill_chunk for request in self.running
+            request.num_computed_tokens >= request.num_prompt_tokens
+            for request in self.running
         )
-        cadence_throttle = (
+        next_step = self.current_step + 1
+        cadence_cap = (
             has_active_decode
             and self.decode_aware_prefill_interval > 1
             and next_step % self.decode_aware_prefill_interval != 0
         )
-        if cadence_throttle:
-            # The base DP policy bypasses throttling when it considers prefill
-            # capacity saturated. Interactive TP fairness must remain bounded
-            # even with queued prefills, so force this step to stay decode-only.
-            self.prefill_capacity_bound = False
-        return super().schedule(
-            throttle_prefills=throttle_prefills or cadence_throttle
-        )
+        configured_threshold = self.scheduler_config.long_prefill_token_threshold
+        if cadence_cap:
+            effective_threshold = self.decode_aware_throttled_tokens
+            if configured_threshold > 0:
+                effective_threshold = min(
+                    configured_threshold, effective_threshold
+                )
+            self.scheduler_config.long_prefill_token_threshold = effective_threshold
+            if not self._logged_cadence_cap:
+                logger.warning(
+                    "Decode-aware cadence cap active: interval=%d tokens=%d",
+                    self.decode_aware_prefill_interval,
+                    effective_threshold,
+                )
+                self._logged_cadence_cap = True
+        try:
+            return super().schedule(throttle_prefills=throttle_prefills)
+        finally:
+            self.scheduler_config.long_prefill_token_threshold = configured_threshold
